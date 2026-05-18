@@ -18,16 +18,19 @@ client = None
 
 
 def init():
-    """LLM 클라이언트 초기화."""
+    """LLM 클라이언트 초기화. API 키 없으면 경고만 출력 (TTS는 edge-tts라 키 불필요)."""
     global client
-    if LLM_PROVIDER == "groq":
+    if LLM_PROVIDER == "groq" and GROQ_API_KEY:
         client = OpenAI(
             api_key=GROQ_API_KEY,
             base_url="https://api.groq.com/openai/v1"
         )
-    else:
+        print(f"[LLM] 초기화 완료: provider=groq, model={LLM_MODEL}")
+    elif OPENAI_API_KEY:
         client = OpenAI(api_key=OPENAI_API_KEY)
-    print(f"[LLM] 초기화 완료: provider={LLM_PROVIDER}, model={LLM_MODEL}")
+        print(f"[LLM] 초기화 완료: provider=openai, model={LLM_MODEL}")
+    else:
+        print("[LLM] 경고: API 키 미설정. LLM 기능 비활성 (TTS는 정상 작동)")
 
 
 def _call_sync(system_prompt: str, user_msg: str, max_tokens: int = 100) -> str | None:

@@ -1,6 +1,7 @@
 """
 TTS 음성 출력 + 세션 기반 캐시 관리.
-- TTSCache: text → mp3 캐시. 세션 단위로 생성/삭제.
+- edge-tts 사용 (무료, API 키 불필요, 한국어 지원)
+- TTSCache: text -> mp3 캐시. 세션 단위로 생성/삭제.
 - get_tts_cache(): 싱글톤 인스턴스 반환
 """
 
@@ -8,9 +9,11 @@ import asyncio
 import hashlib
 import shutil
 from pathlib import Path
-from openai import OpenAI
-from server.config import OPENAI_API_KEY
+import edge_tts
 from utils.latency_logger import log
+
+# 한국어 여성 음성 (자연스러운 음성)
+TTS_VOICE = "ko-KR-SunHiNeural"
 
 
 class TTSCache:
@@ -20,7 +23,6 @@ class TTSCache:
         self._cache_root = Path(cache_root)
         self._session_dir: Path | None = None
         self._index: dict[str, Path] = {}
-        self._client = OpenAI(api_key=OPENAI_API_KEY)
 
     def start_session(self, session_id: str):
         """새 데모 세션 시작."""
@@ -42,8 +44,8 @@ class TTSCache:
         key = self._hash(text)
         return self._index.get(key)
 
-    def _generate_and_cache(self, text: str) -> Path | None:
-        """TTS 생성 후 캐시에 저장 (동기, 스레드 풀에서 실행)."""
+    async def _generate_and_cache(self, text: str) -> Path | None:
+        """edge-tts로 TTS 생성 후 캐시에 저장 (async 네이티브)."""
         if self._session_dir is None:
             print("[TTS] 세션 미시작. start_session() 먼저 호출 필요.")
             return None
@@ -52,15 +54,12 @@ class TTSCache:
             key = self._hash(text)
             filepath = self._session_dir / f"{key}.mp3"
 
-            response = self._client.audio.speech.create(
-                model="tts-1",
-                voice="nova",
-                input=text,
-                response_format="mp3"
-            )
-            response.write_to_file(str(filepath))
+            communicate = edge_tts.Communicate(text, TTS_VOICE)
+            await communicate.save(str(filepath))
+
             self._index[key] = filepath
             log("tts_end")
+            print(f"[TTS] 생성 완료: {filepath.name}")
             return filepath
         except Exception as e:
             log("tts_fail")
@@ -68,12 +67,12 @@ class TTSCache:
             return None
 
     async def get_or_create(self, text: str) -> Path | None:
-        """캐시 HIT → 즉시 반환. MISS → TTS 생성 (비블로킹)."""
+        """캐시 HIT -> 즉시 반환. MISS -> TTS 생성 (비블로킹)."""
         cached = self.get(text)
         if cached:
             print("[TTS] 캐시 HIT")
             return cached
-        return await asyncio.to_thread(self._generate_and_cache, text)
+        return await self._generate_and_cache(text)
 
     def _hash(self, text: str) -> str:
         return hashlib.md5(text.encode("utf-8")).hexdigest()

@@ -1,7 +1,7 @@
 """
 Step 1-6 테스트: LLM 클라이언트 + TTS 캐시 + narration
 실행: python tests/test_step1_6_llm_tts.py
-API 키 불필요 — mock/구조 테스트만 수행.
+API 키 불필요 - mock/구조 테스트만 수행.
 """
 
 import sys
@@ -92,7 +92,7 @@ def test_tts_cache():
         assert len(cache._index) == 0, "세션 종료 후 인덱스 비어야 함"
         print("[PASS] Case 5: end_session → 디렉토리 삭제 완료")
 
-        # Case 6: get_or_create async — 세션 미시작 시 None
+        # Case 6: get_or_create async - 세션 미시작 시 None
         async def _test_no_session():
             return await cache.get_or_create("세션 없음")
         result = asyncio.run(_test_no_session())
@@ -124,4 +124,4 @@ if __name__ == "__main__":
     test_llm_client_structure()
     test_tts_cache()
     test_narration_structure()
-    print(f"[결과] Step 1-6 PASS — LLM/TTS/Narration 구조 테스트 모두 통과")
+    print(f"[결과] Step 1-6 PASS - LLM/TTS/Narration 구조 테스트 모두 통과")

@@ -1,7 +1,7 @@
 """
 Step 1-2 테스트: YOLO bbox 후처리 (enriched JSON)
 실행: python tests/test_step1_2_vision_enrich.py
-하드웨어 불필요 — mock 데이터 사용.
+하드웨어 불필요 - mock 데이터 사용.
 """
 
 import sys
@@ -49,7 +49,7 @@ def test_enrich():
     assert result["ultrasonic_cm"] == 45
     assert result["ultrasonic_target"] == "chair"
 
-    print("\n[결과] Step 1-2 PASS — 방향/거리/초음파 매칭 모두 정상")
+    print("\n[결과] Step 1-2 PASS - 방향/거리/초음파 매칭 모두 정상")
 
 
 if __name__ == "__main__":

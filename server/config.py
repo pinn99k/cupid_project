@@ -16,10 +16,8 @@ def _require(key: str) -> str:
     return value
 
 
-# 필수 (없으면 서버 시작 불가)
-OPENAI_API_KEY: str = _require("OPENAI_API_KEY")
-
-# 선택 (기본값 있음)
+# LLM API 키 (둘 중 하나는 있어야 LLM 사용 가능, TTS는 edge-tts라 키 불필요)
+OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openai")
 LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")

@@ -1,7 +1,7 @@
 """
 Step 1-3 테스트: 위험 판단 (Stage 3 전용)
 실행: python tests/test_step1_3_danger.py
-하드웨어 불필요 — mock 데이터 사용.
+하드웨어 불필요 - mock 데이터 사용.
 """
 
 import sys
@@ -73,7 +73,7 @@ def test_danger():
     assert result is None, f"안전 상태에서 None이어야 함: {result}"
     print("[PASS] Case 5: Stage 3 + safe → None")
 
-    print(f"\n[결과] Step 1-3 PASS — 5개 케이스 모두 통과")
+    print(f"\n[결과] Step 1-3 PASS - 5개 케이스 모두 통과")
 
 
 if __name__ == "__main__":

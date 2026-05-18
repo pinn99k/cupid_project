@@ -1,7 +1,7 @@
 """
 Step 1-8 테스트: FastAPI 서버 + WebSocket 핸들러
 실행: python tests/test_step1_8_server.py
-하드웨어 불필요 — httpx + WebSocket mock 사용.
+하드웨어 불필요 - httpx + WebSocket mock 사용.
 """
 
 import sys
@@ -58,7 +58,7 @@ def test_websocket_handler():
     assert isinstance(clients, set), f"clients는 set이어야 함: {type(clients)}"
     print(f"[PASS] Case 1: clients set (현재 {len(clients)}개)")
 
-    # Case 2: broadcast — 클라이언트 없을 때 에러 없이 동작
+    # Case 2: broadcast - 클라이언트 없을 때 에러 없이 동작
     async def _test_broadcast_empty():
         await broadcast({"type": "test", "message": "hello"})
     asyncio.run(_test_broadcast_empty())
@@ -142,4 +142,4 @@ if __name__ == "__main__":
     test_websocket_handler()
     test_handle_dashboard_message()
     test_health_endpoint()
-    print(f"[결과] Step 1-8 PASS — 서버/WebSocket/핸들러/Health 모두 통과")
+    print(f"[결과] Step 1-8 PASS - 서버/WebSocket/핸들러/Health 모두 통과")

@@ -1,7 +1,7 @@
 """
 Step 1-4 테스트: AudioManager (스레드 분리 + Lock)
 실행: python tests/test_step1_4_audio_manager.py
-하드웨어 불필요 — pygame mock 사용.
+하드웨어 불필요 - pygame mock 사용.
 """
 
 import sys
@@ -41,13 +41,13 @@ def test_audio_manager():
     assert isinstance(mgr1._lock, type(threading.Lock())), "threading.Lock 타입이어야 함"
     print("[PASS] Case 4: Lock 정상")
 
-    # --- Case 5: play() — 존재하지 않는 파일 → 에러 없이 스킵 ---
+    # --- Case 5: play() - 존재하지 않는 파일 → 에러 없이 스킵 ---
     print("\n[5] play() 없는 파일 스킵...")
     mgr1.play("nonexistent_file_12345.mp3")
     time.sleep(0.3)
     print("[PASS] Case 5: 존재하지 않는 파일 → 에러 없이 무시")
 
-    # --- Case 6: play_path() — 존재하지 않는 경로 → 에러 없이 스킵 ---
+    # --- Case 6: play_path() - 존재하지 않는 경로 → 에러 없이 스킵 ---
     print("\n[6] play_path() 없는 파일 스킵...")
     mgr1.play_path("/tmp/nonexistent_12345.mp3")
     time.sleep(0.3)
@@ -65,7 +65,7 @@ def test_audio_manager():
     assert result is False, "재생 중이 아니므로 False"
     print("[PASS] Case 8: is_playing() → False")
 
-    print(f"\n[결과] Step 1-4 PASS — 8개 케이스 모두 통과")
+    print(f"\n[결과] Step 1-4 PASS - 8개 케이스 모두 통과")
 
 
 if __name__ == "__main__":

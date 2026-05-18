@@ -1,20 +1,29 @@
-# 환경 변수 (API 키)
+# 환경변수
 .env
 
-# Python 캐시
+# Python
+.venv/
+venv/
+env/
 __pycache__/
 *.pyc
 *.pyo
 
-# 가상환경
-venv/
-env/
+# YOLO 모델 파일
+*.pt
 
-# IDE 설정
+# 생성된 오디오 (API로 생성하므로 git 제외)
+audio/fallback/*.mp3
+audio/fallback/*.wav
+
+# TTS 캐시
+tts_cache/
+
+# IDE
 .vscode/
 .idea/
 
-# OS 자동 생성
+# OS
 .DS_Store
 Thumbs.db
 

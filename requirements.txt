@@ -9,3 +9,12 @@ fastapi # 서버
 uvicorn # FastAPI 실행
 websockets
 numpy
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+websockets>=12.0
+ultralytics>=8.1.0
+opencv-python>=4.8.0
+python-dotenv>=1.0.0
+openai>=1.12.0
+pygame>=2.5.0
+numpy>=1.24.0

@@ -1,7 +1,11 @@
 # 필요 라이브러리 
 
-# AI 모델
-# 객체 인식
-# 음성 처리
-# 비동기
-# 서버
+ultralytics # YOLOv8
+opencv-python # 웹캠 + 영상 처리
+pygame # 오디오 재생
+python-dotenv # .env 읽기
+groq # Groq API
+fastapi # 서버
+uvicorn # FastAPI 실행
+websockets
+numpy

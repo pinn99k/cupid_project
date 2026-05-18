@@ -18,6 +18,14 @@ env/
 .DS_Store
 Thumbs.db
 
-# 큰 모델 파일
+# YOLO / AI 모델 파일
+*.pt
+*.pth
+*.onnx
 
 # 임시 음성 파일
+*.wav
+*.mp3
+
+# 로그 파일
+*.log

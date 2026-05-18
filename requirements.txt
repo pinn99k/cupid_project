@@ -1,14 +1,3 @@
-# 필요 라이브러리 
-
-ultralytics # YOLOv8
-opencv-python # 웹캠 + 영상 처리
-pygame # 오디오 재생
-python-dotenv # .env 읽기
-groq # Groq API
-fastapi # 서버
-uvicorn # FastAPI 실행
-websockets
-numpy
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 websockets>=12.0
@@ -16,5 +5,6 @@ ultralytics>=8.1.0
 opencv-python>=4.8.0
 python-dotenv>=1.0.0
 openai>=1.12.0
+groq
 pygame>=2.5.0
 numpy>=1.24.0

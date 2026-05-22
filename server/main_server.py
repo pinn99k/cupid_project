@@ -1,8 +1,9 @@
 """
 FastAPI + WebSocket 엔트리.
-- 대시보드 WebSocket 연결 및 AI 파이프라인 오케스트레이션
-- 세션 관리 (new_session, clear_tts_cache 이벤트 처리)
-- AppState 데이터클래스로 서버 상태 관리
+- MJPEG 프레임 관리 (set_frame / get_frame / encode)
+- AppState + reset_session()
+- 대시보드 WebSocket 메시지 핸들러
+- 세션 초기화 시 오디오/TTS/상태 일괄 리셋
 """
 
 import time
@@ -27,10 +28,16 @@ _frame_lock = threading.Lock()
 
 
 def set_frame(frame):
-    """detection_loop에서 호출 - 최신 프레임 저장 (스레드 안전)."""
+    """_frame_loop에서 호출 — 최신 프레임 저장 (스레드 안전)."""
     global _latest_frame
     with _frame_lock:
         _latest_frame = frame.copy() if frame is not None else None
+
+
+def get_frame():
+    """AI 파이프라인용 — 최신 프레임 복사본 반환."""
+    with _frame_lock:
+        return _latest_frame.copy() if _latest_frame is not None else None
 
 
 def _encode_frame():
@@ -44,7 +51,7 @@ def _encode_frame():
 
 
 # ---------------------------------------------------------------------------
-# P2: 상태를 dataclass로 관리
+# 서버 상태 관리
 # ---------------------------------------------------------------------------
 @dataclass
 class AppState:
@@ -57,10 +64,6 @@ class AppState:
 
 
 app_state = AppState()
-
-# 하위 호환: 모듈 레벨 변수 참조용 (기존 테스트 지원)
-current_stage = app_state.current_stage
-learning_active = app_state.learning_active
 
 app = FastAPI(title="SIA MVP Server")
 app.add_middleware(
@@ -80,9 +83,34 @@ def get_state() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# 세션 리셋 — 오디오/상태를 한 번에 정리
+# ---------------------------------------------------------------------------
+def reset_session():
+    """세션 초기화: 오디오 정지+큐비우기, 상태 리셋.
+    stop_learning, new_session 양쪽에서 호출."""
+    app_state.learning_active = False
+    app_state.current_stage = 1
+
+    try:
+        from ai_core.audio_manager import get_audio_manager
+        am = get_audio_manager()
+        am.stop()
+        # 큐에 남은 대기 항목 비우기
+        while not am._queue.empty():
+            try:
+                am._queue.get_nowait()
+            except Exception:
+                break
+    except Exception as e:
+        print(f"[SERVER] 오디오 리셋 오류: {e}")
+
+
+# ---------------------------------------------------------------------------
+# 대시보드 메시지 핸들러
+# ---------------------------------------------------------------------------
 async def handle_dashboard_message(msg: dict):
     """대시보드에서 온 WebSocket 메시지 처리."""
-    global current_stage, learning_active
 
     if "event" in msg:
         event = msg["event"]
@@ -91,11 +119,7 @@ async def handle_dashboard_message(msg: dict):
         if event == "start_learning":
             app_state.learning_active = True
             app_state.current_stage = msg.get("stage", 1)
-            # 하위 호환
-            current_stage = app_state.current_stage
-            learning_active = app_state.learning_active
             print(f"[SERVER] 학습 시작: Stage {app_state.current_stage}")
-            # P1: ack broadcast
             await broadcast({
                 "type": "ack",
                 "event": "start_learning",
@@ -103,17 +127,16 @@ async def handle_dashboard_message(msg: dict):
             })
 
         elif event == "stop_learning":
-            app_state.learning_active = False
-            # 하위 호환
-            learning_active = app_state.learning_active
-            print("[SERVER] 학습 중지")
+            reset_session()
+            print("[SERVER] 학습 중지 + 세션 리셋")
             await broadcast({
                 "type": "ack",
                 "event": "stop_learning",
+                "stage": app_state.current_stage,
             })
 
         elif event == "new_session":
-            # P1: try/except — ai_core 실패 시 크래시 방지
+            reset_session()
             try:
                 from ai_core.tts import get_tts_cache
                 tts = get_tts_cache()
@@ -121,13 +144,14 @@ async def handle_dashboard_message(msg: dict):
                 new_sid = f"session_{int(time.time())}"
                 tts.start_session(new_sid)
                 app_state.session_id = new_sid
-                print(f"[SERVER] 새 세션 시작: {new_sid}")
+                print(f"[SERVER] 새 세션: {new_sid}")
             except Exception as e:
-                print(f"[SERVER] new_session 처리 오류: {e}")
+                print(f"[SERVER] new_session TTS 오류: {e}")
             await broadcast({
                 "type": "ack",
                 "event": "new_session",
                 "session_id": app_state.session_id,
+                "stage": app_state.current_stage,
             })
 
         elif event == "clear_tts_cache":
@@ -136,7 +160,7 @@ async def handle_dashboard_message(msg: dict):
                 get_tts_cache().end_session()
                 print("[SERVER] TTS 캐시 삭제")
             except Exception as e:
-                print(f"[SERVER] clear_tts_cache 처리 오류: {e}")
+                print(f"[SERVER] clear_tts_cache 오류: {e}")
             await broadcast({
                 "type": "ack",
                 "event": "clear_tts_cache",
@@ -149,20 +173,27 @@ async def handle_dashboard_message(msg: dict):
                 get_audio_manager().play(audio_file)
                 print(f"[SERVER] Fallback 재생: {audio_file}")
             except Exception as e:
-                print(f"[SERVER] fallback 처리 오류: {e}")
+                print(f"[SERVER] fallback 오류: {e}")
             await broadcast({
                 "type": "ack",
                 "event": "fallback",
             })
 
     elif "stt_text" in msg:
-        # P0 #10 fix: STT 텍스트를 LLM에 직접 전달 (대화 모드)
         stt_text = msg["stt_text"]
         if not stt_text or not stt_text.strip():
-            return  # 빈 텍스트 무시
+            return
 
         print(f"[SERVER] STT 수신: {stt_text}")
 
+        # 사용자 발화를 대시보드에 먼저 표시
+        await broadcast({
+            "type": "user_stt",
+            "message": stt_text,
+            "timestamp": int(time.time() * 1000),
+        })
+
+        # LLM 호출 → TTS → 음성 재생
         try:
             from ai_core.llm_client import call_async, SYSTEM_PROMPT
             from ai_core.tts import get_tts_cache
@@ -190,14 +221,12 @@ async def handle_dashboard_message(msg: dict):
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    """WebSocket 엔드포인트."""
     await connect(ws, state_provider=get_state)
     await receive_loop(ws, handle_dashboard_message)
 
 
 @app.get("/health")
 async def health():
-    """서버 상태 확인."""
     return {
         "status": "ok",
         "stage": app_state.current_stage,
@@ -223,8 +252,7 @@ async def _generate_mjpeg():
 
 @app.get("/video_feed")
 async def video_feed():
-    """MJPEG 비디오 스트림 - 대시보드 카메라 뷰용."""
     return StreamingResponse(
         _generate_mjpeg(),
-        media_type="multipart/x-mixed-replace; boundary=frame"
+        media_type="multipart/x-mixed-replace; boundary=frame",
     )

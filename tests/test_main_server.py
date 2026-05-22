@@ -12,10 +12,12 @@ from server.main_server import (
     AppState,
     app_state,
     set_frame,
+    get_frame,
     _encode_frame,
     _latest_frame,
     _frame_lock,
     get_state,
+    reset_session,
     handle_dashboard_message,
 )
 
@@ -114,6 +116,22 @@ class TestMjpegFrame:
         # JPEG 매직 바이트 확인
         assert result[:2] == b'\xff\xd8'
 
+    def test_get_frame_returns_copy(self):
+        """get_frame은 독립적인 복사본을 반환하는지 검증."""
+        frame = np.zeros((50, 50, 3), dtype=np.uint8)
+        frame[0, 0] = [100, 200, 255]
+        set_frame(frame)
+        got = get_frame()
+        assert got is not None
+        assert got[0, 0, 0] == 100
+        # 원본 수정해도 get_frame 결과에 영향 없음
+        frame[0, 0] = [0, 0, 0]
+        got2 = get_frame()
+        assert got2[0, 0, 0] == 100
+
+    def test_get_frame_none_when_no_frame(self):
+        assert get_frame() is None
+
     def test_set_frame_thread_safety(self):
         """다중 스레드에서 set_frame 호출 시 크래시 없음."""
         errors = []
@@ -132,6 +150,24 @@ class TestMjpegFrame:
         for t in threads:
             t.join()
         assert errors == []
+
+
+class TestResetSession:
+    def setup_method(self):
+        app_state.current_stage = 3
+        app_state.learning_active = True
+        app_state.session_id = "test_session"
+
+    def test_reset_clears_state(self):
+        reset_session()
+        assert app_state.current_stage == 1
+        assert app_state.learning_active is False
+        # session_id는 reset_session에서 변경하지 않음 (new_session에서 별도 처리)
+        assert app_state.session_id == "test_session"
+
+    def test_reset_no_crash_without_audio(self):
+        """AudioManager 없어도 크래시 없음."""
+        reset_session()  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -160,11 +196,13 @@ class TestHandleDashboardMessage:
 
     @pytest.mark.asyncio
     @patch("server.main_server.broadcast", new_callable=AsyncMock)
-    async def test_stop_learning(self, mock_broadcast):
+    async def test_stop_learning_resets_session(self, mock_broadcast):
         app_state.learning_active = True
+        app_state.current_stage = 3
         msg = {"event": "stop_learning"}
         await handle_dashboard_message(msg)
         assert app_state.learning_active is False
+        assert app_state.current_stage == 1  # reset_session이 stage도 리셋
         mock_broadcast.assert_awaited_once()
         sent = mock_broadcast.call_args[0][0]
         assert sent["type"] == "ack"
@@ -206,15 +244,15 @@ class TestHandleDashboardMessage:
 
     @pytest.mark.asyncio
     @patch("server.main_server.broadcast", new_callable=AsyncMock)
-    async def test_stt_text_triggers_processing(self, mock_broadcast):
-        """유효한 STT 텍스트가 처리 파이프라인을 시작하는지 검증.
-        ai_core가 있으면 llm 호출, 없으면 error broadcast."""
+    async def test_stt_broadcasts_user_text_first(self, mock_broadcast):
+        """STT 수신 시 user_stt를 먼저 브로드캐스트하는지 검증."""
         msg = {"stt_text": "안녕하세요"}
         await handle_dashboard_message(msg)
-        # ai_core 상태에 따라 stt_response 또는 error 중 하나가 브로드캐스트
-        if mock_broadcast.await_count > 0:
-            last_sent = mock_broadcast.call_args[0][0]
-            assert last_sent["type"] in ("stt_response", "error")
+        # 최소 1번은 호출 (user_stt)
+        assert mock_broadcast.await_count >= 1
+        first_sent = mock_broadcast.call_args_list[0][0][0]
+        assert first_sent["type"] == "user_stt"
+        assert first_sent["message"] == "안녕하세요"
 
     @pytest.mark.asyncio
     @patch("server.main_server.broadcast", new_callable=AsyncMock)

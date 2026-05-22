@@ -149,6 +149,7 @@ async def _ai_loop():
                 last_danger_obj = danger["object"]
                 last_danger_time = now
                 log("danger_detected")
+                await broadcast({"type": "tts_start"})
                 audio.play(danger["audio_file"], interrupt=True)
                 await broadcast({
                     "type": "danger",
@@ -161,6 +162,10 @@ async def _ai_loop():
                     "timestamp": int(time.time() * 1000),
                 })
                 elapsed("detect_start", "danger_detected")
+                # 위험 오디오 재생 완료 대기 → STT 복귀
+                while await asyncio.to_thread(audio.is_playing):
+                    await asyncio.sleep(0.2)
+                await broadcast({"type": "tts_done"})
             # 위험 감지 시에도 프레임은 계속 갱신됨 (별도 루프)
             await asyncio.sleep(0.5)
             continue
@@ -178,12 +183,9 @@ async def _ai_loop():
 
 
 async def _handle_narration(enriched, tts, audio, stage):
-    """LLM + TTS를 백그라운드 태스크로 처리."""
+    """LLM + TTS를 백그라운드 태스크로 처리. 반이중: tts_start/tts_done."""
     text = await narrate_async(enriched)
     if text:
-        filepath = await tts.get_or_create(text)
-        if filepath:
-            audio.play_path(str(filepath))
         await broadcast({
             "type": "narration",
             "objects": enriched["objects"],
@@ -191,8 +193,19 @@ async def _handle_narration(enriched, tts, audio, stage):
             "stage": stage,
             "timestamp": int(time.time() * 1000),
         })
+        filepath = await tts.get_or_create(text)
+        if filepath:
+            await broadcast({"type": "tts_start"})
+            audio.play_path(str(filepath))
+            while await asyncio.to_thread(audio.is_playing):
+                await asyncio.sleep(0.2)
+            await broadcast({"type": "tts_done"})
     else:
-        audio.play("buffer_01.mp3")  # LLM 실패 → Fallback
+        await broadcast({"type": "tts_start"})
+        audio.play("buffer_01.mp3")
+        while await asyncio.to_thread(audio.is_playing):
+            await asyncio.sleep(0.2)
+        await broadcast({"type": "tts_done"})
 
 
 # ---------------------------------------------------------------------------

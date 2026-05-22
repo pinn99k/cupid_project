@@ -110,26 +110,41 @@ def reset_session():
 # STT → LLM → TTS 백그라운드 처리 (handler를 블로킹하지 않음)
 # ---------------------------------------------------------------------------
 async def _process_stt(stt_text: str):
-    """LLM 호출 + TTS 생성 + 오디오 재생. 백그라운드 태스크로 실행."""
+    """LLM 호출 + TTS 생성 + 반이중 오디오 재생. 백그라운드 태스크."""
     try:
         from ai_core.llm_client import call_async, SYSTEM_PROMPT
         from ai_core.tts import get_tts_cache
         from ai_core.audio_manager import get_audio_manager
+        import asyncio as _aio
 
         response = await call_async(SYSTEM_PROMPT, stt_text)
         if response:
-            tts = get_tts_cache()
-            filepath = await tts.get_or_create(response)
-            if filepath:
-                get_audio_manager().play_path(str(filepath))
+            # 1. 응답 텍스트를 대시보드에 즉시 표시
             await broadcast({
                 "type": "stt_response",
                 "message": response,
                 "stage": app_state.current_stage,
                 "timestamp": int(time.time() * 1000),
             })
+
+            # 2. TTS 생성 + 재생 (반이중: STT 정지 → 재생 → STT 복귀)
+            tts = get_tts_cache()
+            filepath = await tts.get_or_create(response)
+            if filepath:
+                am = get_audio_manager()
+                await broadcast({"type": "tts_start"})
+                am.play_path(str(filepath))
+                # 재생 완료 대기 (비블로킹 폴링)
+                while await _aio.to_thread(am.is_playing):
+                    await _aio.sleep(0.2)
+                await broadcast({"type": "tts_done"})
+            else:
+                # TTS 파일 생성 실패 시에도 tts_done 보장
+                await broadcast({"type": "tts_done"})
     except Exception as e:
         print(f"[SERVER] STT 처리 오류: {e}")
+        # 에러 시에도 tts_done 보내서 STT가 복귀하도록
+        await broadcast({"type": "tts_done"})
         await broadcast({
             "type": "error",
             "message": f"stt processing error: {e}",

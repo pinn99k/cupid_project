@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useEffect, useState, useRef } from 'react'
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
 import Header from '../components/Header.jsx'
 import StageStepper from '../components/StageStepper.jsx'
@@ -8,8 +8,36 @@ import ChatPanel from '../components/ChatPanel.jsx'
 import STTInput from '../components/STTInput.jsx'
 import ControlBar from '../components/ControlBar.jsx'
 
+// 음성 상태: idle → listening ↔ responding
+// idle: STT 꺼짐
+// listening: STT 켜짐, 사용자 말 대기
+// responding: TTS 재생 중, STT 일시정지
+const VOICE_IDLE = 'idle'
+const VOICE_LISTENING = 'listening'
+const VOICE_RESPONDING = 'responding'
+
 function DashboardPage({ send, messages, connected, stage, setStage, ws, sttActive, setSttActive }) {
-  const { start: sttStart, stop: sttStop } = useSpeechRecognition(ws, sttActive)
+  const { start: sttStart, stop: sttStop, pause: sttPause, resume: sttResume } = useSpeechRecognition(ws)
+  const [voiceState, setVoiceState] = useState(VOICE_IDLE)
+  const prevMsgCountRef = useRef(0)
+
+  // 서버 메시지에 따라 반이중 상태 전환
+  useEffect(() => {
+    // 새 메시지가 추가됐을 때만 처리
+    if (messages.length <= prevMsgCountRef.current) return
+    prevMsgCountRef.current = messages.length
+
+    const last = messages[messages.length - 1]
+    if (!last) return
+
+    if (last.type === 'tts_start') {
+      sttPause()
+      setVoiceState(VOICE_RESPONDING)
+    } else if (last.type === 'tts_done') {
+      sttResume()
+      setVoiceState(sttActive ? VOICE_LISTENING : VOICE_IDLE)
+    }
+  }, [messages, sttActive, sttPause, sttResume])
 
   // messages에서 최신 감지 객체 추출 (DirectionPanel용)
   const latestObjects = useMemo(() => {
@@ -33,13 +61,16 @@ function DashboardPage({ send, messages, connected, stage, setStage, ws, sttActi
     return ''
   }, [messages])
 
+  // 마스터 토글: 켜면 listening, 끄면 idle
   const handleSttToggle = () => {
     if (sttActive) {
       sttStop()
       setSttActive(false)
+      setVoiceState(VOICE_IDLE)
     } else {
       sttStart()
       setSttActive(true)
+      setVoiceState(VOICE_LISTENING)
     }
   }
 
@@ -74,7 +105,7 @@ function DashboardPage({ send, messages, connected, stage, setStage, ws, sttActi
             <ChatPanel messages={messages} />
           </div>
           <div style={{ marginTop: 12 }}>
-            <STTInput isListening={sttActive} onToggle={handleSttToggle} />
+            <STTInput voiceState={voiceState} onToggle={handleSttToggle} />
           </div>
         </div>
       </div>

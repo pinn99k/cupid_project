@@ -1,0 +1,32 @@
+:root {
+  --pink-primary: #F4A7A7;
+  --pink-light: #FDE8E8;
+  --pink-bg: #FFF5F5;
+  --cream-bg: #FAF0E6;
+  --dark: #1E1E1E;
+  --dark-surface: #2A2A2A;
+  --text-primary: rgba(40, 30, 20, 0.85);
+  --text-secondary: rgba(60, 50, 40, 0.6);
+  --green: #4CAF50;
+  --red: #E53935;
+  --radius: 12px;
+  --radius-sm: 8px;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--cream-bg);
+  color: var(--text-primary);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+  font-size: 14px;
+}

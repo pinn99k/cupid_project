@@ -6,13 +6,41 @@ FastAPI + WebSocket 엔트리.
 """
 
 import time
+import threading
+import asyncio as _asyncio
 from dataclasses import dataclass, asdict
 
+import cv2
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from server.websocket_handler import connect, receive_loop, broadcast
 from server.config import SERVER_HOST, SERVER_PORT
+
+
+# ---------------------------------------------------------------------------
+# MJPEG 프레임 저장 (스레드 안전)
+# ---------------------------------------------------------------------------
+_latest_frame = None
+_frame_lock = threading.Lock()
+
+
+def set_frame(frame):
+    """detection_loop에서 호출 - 최신 프레임 저장 (스레드 안전)."""
+    global _latest_frame
+    with _frame_lock:
+        _latest_frame = frame.copy() if frame is not None else None
+
+
+def _encode_frame():
+    """최신 프레임을 JPEG로 인코딩."""
+    with _frame_lock:
+        frame = _latest_frame
+    if frame is None:
+        return None
+    ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    return buffer.tobytes() if ret else None
 
 
 # ---------------------------------------------------------------------------
@@ -175,3 +203,28 @@ async def health():
         "stage": app_state.current_stage,
         "learning_active": app_state.learning_active,
     }
+
+
+# ---------------------------------------------------------------------------
+# MJPEG 비디오 스트림
+# ---------------------------------------------------------------------------
+async def _generate_mjpeg():
+    while True:
+        jpeg = await _asyncio.to_thread(_encode_frame)
+        if jpeg:
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n"
+                + jpeg
+                + b"\r\n"
+            )
+        await _asyncio.sleep(0.042)  # ~24fps
+
+
+@app.get("/video_feed")
+async def video_feed():
+    """MJPEG 비디오 스트림 - 대시보드 카메라 뷰용."""
+    return StreamingResponse(
+        _generate_mjpeg(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )

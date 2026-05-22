@@ -16,7 +16,7 @@ from ai_core.audio_manager import get_audio_manager
 from ai_core.llm_client import init as llm_init
 from ai_core.narration import narrate_async
 from ai_core.tts import get_tts_cache
-from server.main_server import app
+from server.main_server import app, set_frame
 from server.websocket_handler import broadcast
 from server.config import SERVER_HOST, SERVER_PORT
 from utils.latency_logger import log, elapsed
@@ -101,6 +101,7 @@ async def detection_loop():
                 await asyncio.sleep(0.1)
                 continue
             fail_count = 0
+            set_frame(frame)
 
             # Stage 1에서는 YOLO 비활성
             if srv.current_stage == 1:

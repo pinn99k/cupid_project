@@ -107,6 +107,36 @@ def reset_session():
 
 
 # ---------------------------------------------------------------------------
+# STT → LLM → TTS 백그라운드 처리 (handler를 블로킹하지 않음)
+# ---------------------------------------------------------------------------
+async def _process_stt(stt_text: str):
+    """LLM 호출 + TTS 생성 + 오디오 재생. 백그라운드 태스크로 실행."""
+    try:
+        from ai_core.llm_client import call_async, SYSTEM_PROMPT
+        from ai_core.tts import get_tts_cache
+        from ai_core.audio_manager import get_audio_manager
+
+        response = await call_async(SYSTEM_PROMPT, stt_text)
+        if response:
+            tts = get_tts_cache()
+            filepath = await tts.get_or_create(response)
+            if filepath:
+                get_audio_manager().play_path(str(filepath))
+            await broadcast({
+                "type": "stt_response",
+                "message": response,
+                "stage": app_state.current_stage,
+                "timestamp": int(time.time() * 1000),
+            })
+    except Exception as e:
+        print(f"[SERVER] STT 처리 오류: {e}")
+        await broadcast({
+            "type": "error",
+            "message": f"stt processing error: {e}",
+        })
+
+
+# ---------------------------------------------------------------------------
 # 대시보드 메시지 핸들러
 # ---------------------------------------------------------------------------
 async def handle_dashboard_message(msg: dict):
@@ -186,37 +216,16 @@ async def handle_dashboard_message(msg: dict):
 
         print(f"[SERVER] STT 수신: {stt_text}")
 
-        # 사용자 발화를 대시보드에 먼저 표시
+        # 사용자 발화를 대시보드에 즉시 표시
         await broadcast({
             "type": "user_stt",
             "message": stt_text,
             "timestamp": int(time.time() * 1000),
         })
 
-        # LLM 호출 → TTS → 음성 재생
-        try:
-            from ai_core.llm_client import call_async, SYSTEM_PROMPT
-            from ai_core.tts import get_tts_cache
-            from ai_core.audio_manager import get_audio_manager
-
-            response = await call_async(SYSTEM_PROMPT, stt_text)
-            if response:
-                tts = get_tts_cache()
-                filepath = await tts.get_or_create(response)
-                if filepath:
-                    get_audio_manager().play_path(str(filepath))
-                await broadcast({
-                    "type": "stt_response",
-                    "message": response,
-                    "stage": app_state.current_stage,
-                    "timestamp": int(time.time() * 1000),
-                })
-        except Exception as e:
-            print(f"[SERVER] STT 처리 오류: {e}")
-            await broadcast({
-                "type": "error",
-                "message": f"stt processing error: {e}",
-            })
+        # LLM+TTS는 백그라운드 태스크로 — handler 즉시 반환
+        import asyncio
+        asyncio.create_task(_process_stt(stt_text))
 
 
 @app.websocket("/ws")

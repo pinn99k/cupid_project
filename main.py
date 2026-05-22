@@ -18,7 +18,7 @@ from ai_core.narration import narrate_async
 from ai_core.tts import get_tts_cache
 from server.main_server import app, set_frame
 from server.websocket_handler import broadcast
-from server.config import SERVER_HOST, SERVER_PORT
+from server.config import SERVER_HOST, SERVER_PORT, WEBCAM_INDEX
 from utils.latency_logger import log, elapsed
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ _detection_task: asyncio.Task | None = None
 async def _open_camera() -> cv2.VideoCapture | None:
     """웹캠 연결 시도. 실패 시 재시도 후 None 반환."""
     for attempt in range(1, MAX_WEBCAM_RETRIES + 1):
-        cap = cv2.VideoCapture(0)
+        cap = cv2.VideoCapture(WEBCAM_INDEX)
         if cap.isOpened():
             print(f"[MAIN] 웹캠 연결 성공 (시도 {attempt})")
             return cap

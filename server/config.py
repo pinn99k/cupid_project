@@ -35,3 +35,7 @@ YOLO_CONF_THRESHOLD: float = float(os.getenv("YOLO_CONF_THRESHOLD", "0.4"))
 DANGER_DISTANCE_CM: float = float(os.getenv("DANGER_DISTANCE_CM", "30"))
 SERVER_HOST: str = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8000"))
+
+# 카메라 설정
+# 0 = 노트북 내장캠 (기본값), 1+ = 외장 USB 캠
+WEBCAM_INDEX: int = int(os.getenv("WEBCAM_INDEX", "0"))

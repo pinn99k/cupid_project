@@ -20,13 +20,13 @@ def test_server_structure():
     print("=" * 50)
 
     # Case 1: FastAPI app import
-    from server.main_server import app, current_stage, learning_active
+    from server.main_server import app, app_state
     assert app is not None, "FastAPI app이 None이면 안 됨"
     print("[PASS] Case 1: FastAPI app import 성공")
 
-    # Case 2: 초기 상태
-    assert current_stage == 1, f"초기 stage는 1이어야 함: {current_stage}"
-    assert learning_active is False, f"초기 learning_active는 False: {learning_active}"
+    # Case 2: 초기 상태 (AppState 사용)
+    assert app_state.current_stage == 1, f"초기 stage는 1이어야 함: {app_state.current_stage}"
+    assert app_state.learning_active is False, f"초기 learning_active는 False: {app_state.learning_active}"
     print("[PASS] Case 2: 초기 상태 (stage=1, learning=False)")
 
     # Case 3: CORS 미들웨어 확인
@@ -80,11 +80,11 @@ def test_handle_dashboard_message():
     print("=" * 50)
 
     import server.main_server as srv
-    from server.main_server import handle_dashboard_message
+    from server.main_server import handle_dashboard_message, app_state
 
     # 초기 상태 리셋
-    srv.current_stage = 1
-    srv.learning_active = False
+    app_state.current_stage = 1
+    app_state.learning_active = False
 
     # Case 1: start_learning 이벤트
     async def _test_start_learning():
@@ -93,15 +93,15 @@ def test_handle_dashboard_message():
             "stage": 2
         })
     asyncio.run(_test_start_learning())
-    assert srv.learning_active is True, "start_learning 후 learning_active=True"
-    assert srv.current_stage == 2, f"start_learning stage=2: {srv.current_stage}"
+    assert app_state.learning_active is True, "start_learning 후 learning_active=True"
+    assert app_state.current_stage == 2, f"start_learning stage=2: {app_state.current_stage}"
     print("[PASS] Case 1: start_learning → stage=2, learning=True")
 
     # Case 2: stop_learning 이벤트
     async def _test_stop_learning():
         await handle_dashboard_message({"event": "stop_learning"})
     asyncio.run(_test_stop_learning())
-    assert srv.learning_active is False, "stop_learning 후 learning_active=False"
+    assert app_state.learning_active is False, "stop_learning 후 learning_active=False"
     print("[PASS] Case 2: stop_learning → learning=False")
 
     # Case 3: Stage 3로 변경
@@ -111,12 +111,12 @@ def test_handle_dashboard_message():
             "stage": 3
         })
     asyncio.run(_test_stage3())
-    assert srv.current_stage == 3, f"Stage 3으로 변경: {srv.current_stage}"
+    assert app_state.current_stage == 3, f"Stage 3으로 변경: {app_state.current_stage}"
     print("[PASS] Case 3: start_learning stage=3")
 
     # 리셋
-    srv.current_stage = 1
-    srv.learning_active = False
+    app_state.current_stage = 1
+    app_state.learning_active = False
 
     print()
 

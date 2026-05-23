@@ -161,24 +161,39 @@ async def _ai_loop():
                 last_danger_obj = danger["object"]
                 last_danger_time = now
                 log("danger_detected")
-                async with _tts_lock:
-                    await broadcast({"type": "tts_start"})
-                    audio.play(danger["audio_file"], interrupt=True)
+                try:
+                    async with _tts_lock:
+                        await broadcast({"type": "tts_start"})
+                        audio.play(danger["audio_file"], interrupt=True)
+                        await broadcast({
+                            "type": "danger",
+                            "object": danger["object"],
+                            "direction": danger["direction"],
+                            "distance_cm": danger["distance_cm"],
+                            "message": f"위험: {danger['object']}",
+                            "stage": srv.app_state.current_stage,
+                            "audio_file": danger["audio_file"],
+                            "timestamp": int(time.time() * 1000),
+                        })
+                        elapsed("detect_start", "danger_detected")
+                        # 위험 오디오 재생 완료 대기 → STT 복귀
+                        while await asyncio.to_thread(audio.is_playing):
+                            await asyncio.sleep(0.2)
+                        await broadcast({"type": "tts_done"})
+                except Exception as e:
+                    print(f"[DANGER] 오디오 재생 실패: {e}")
                     await broadcast({
-                        "type": "danger",
-                        "object": danger["object"],
-                        "direction": danger["direction"],
-                        "distance_cm": danger["distance_cm"],
-                        "message": f"위험: {danger['object']}",
-                        "stage": srv.app_state.current_stage,
-                        "audio_file": danger["audio_file"],
+                        "type": "error",
+                        "message": f"위험 경고음 재생 실패",
                         "timestamp": int(time.time() * 1000),
                     })
-                    elapsed("detect_start", "danger_detected")
-                    # 위험 오디오 재생 완료 대기 → STT 복귀
-                    while await asyncio.to_thread(audio.is_playing):
-                        await asyncio.sleep(0.2)
-                    await broadcast({"type": "tts_done"})
+                    async with _tts_lock:
+                        await broadcast({"type": "tts_start"})
+                        # Fallback으로 기본 경고음 재생
+                        audio.play("buffer_01.mp3", interrupt=True)
+                        while await asyncio.to_thread(audio.is_playing):
+                            await asyncio.sleep(0.2)
+                        await broadcast({"type": "tts_done"})
             # 위험 감지 시에도 프레임은 계속 갱신됨 (별도 루프)
             await asyncio.sleep(0.5)
             continue
@@ -197,7 +212,17 @@ async def _ai_loop():
 
 async def _handle_narration(enriched, tts, audio, stage):
     """LLM + TTS를 백그라운드 태스크로 처리. tts_lock으로 직렬화."""
-    text = await narrate_async(enriched)
+    try:
+        text = await narrate_async(enriched)
+    except Exception as e:
+        print(f"[NARRATION] LLM 에러: {type(e).__name__}: {e}")
+        await broadcast({
+            "type": "error",
+            "message": f"공간 묘사 생성 실패: {type(e).__name__}",
+            "timestamp": int(time.time() * 1000),
+        })
+        text = None
+
     if text:
         await broadcast({
             "type": "narration",
@@ -206,15 +231,37 @@ async def _handle_narration(enriched, tts, audio, stage):
             "stage": stage,
             "timestamp": int(time.time() * 1000),
         })
-        async with _tts_lock:
-            filepath = await tts.get_or_create(text)
-            if filepath:
+        try:
+            async with _tts_lock:
+                filepath = await tts.get_or_create(text)
+                if filepath:
+                    await broadcast({"type": "tts_start"})
+                    audio.play_path(str(filepath))
+                    while await asyncio.to_thread(audio.is_playing):
+                        await asyncio.sleep(0.2)
+                    await broadcast({"type": "tts_done"})
+                else:
+                    # TTS 파일 생성 실패 → fallback
+                    await broadcast({"type": "tts_start"})
+                    audio.play("buffer_01.mp3")
+                    while await asyncio.to_thread(audio.is_playing):
+                        await asyncio.sleep(0.2)
+                    await broadcast({"type": "tts_done"})
+        except Exception as e:
+            print(f"[NARRATION] TTS 에러: {e}")
+            await broadcast({
+                "type": "error",
+                "message": f"TTS 재생 실패",
+                "timestamp": int(time.time() * 1000),
+            })
+            async with _tts_lock:
                 await broadcast({"type": "tts_start"})
-                audio.play_path(str(filepath))
+                audio.play("buffer_01.mp3")
                 while await asyncio.to_thread(audio.is_playing):
                     await asyncio.sleep(0.2)
                 await broadcast({"type": "tts_done"})
     else:
+        # LLM 응답 없음 → fallback
         async with _tts_lock:
             await broadcast({"type": "tts_start"})
             audio.play("buffer_01.mp3")

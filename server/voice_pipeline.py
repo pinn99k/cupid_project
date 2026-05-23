@@ -77,10 +77,16 @@ class VoicePipeline:
 
         # 히스토리를 system prompt에 포함
         context = self._build_context(SYSTEM_PROMPT)
-        response = await call_async(context, text)
+        try:
+            response = await call_async(context, text)
+        except Exception as e:
+            print(f"[VoicePipeline] LLM 에러: {e}")
+            await self._play_fallback(f"LLM 에러: {type(e).__name__}")
+            return
 
         if not response:
             print("[VoicePipeline] LLM 응답 없음")
+            await self._play_fallback("LLM 응답 없음")
             return
 
         # 히스토리 저장
@@ -124,6 +130,34 @@ class VoicePipeline:
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
         except Exception as e:
             print(f"[VoicePipeline] TTS 오류: {e}")
+            await broadcast({"type": "error", "message": f"TTS 오류: {type(e).__name__}", "timestamp": int(time.time() * 1000)})
+            await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+
+    async def _play_fallback(self, error_msg: str):
+        """에러 발생 시 fallback 오디오 재생."""
+        try:
+            from ai_core.audio_manager import get_audio_manager
+
+            # 에러 메시지 broadcast
+            await broadcast({
+                "type": "error",
+                "message": error_msg,
+                "timestamp": int(time.time() * 1000),
+            })
+
+            # Fallback 오디오 재생
+            async with self._tts_lock:
+                await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
+                am = get_audio_manager()
+                am.play("buffer_01.mp3")
+                while await asyncio.to_thread(am.is_playing):
+                    if not self._running:
+                        am.stop()
+                        break
+                    await asyncio.sleep(0.2)
+                await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+        except Exception as e:
+            print(f"[VoicePipeline] Fallback 재생 오류: {e}")
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
 
     def _build_context(self, base_prompt: str) -> str:

@@ -13,13 +13,13 @@ export default function ChatPanel({ messages, stage }) {
   }, [messages]);
 
   // Stage별 필터링:
-  // Stage 1, 2: 대화 메시지만 (user_stt, stt_response, error)
-  // Stage 3: 대화 + 위험 메시지 (user_stt, stt_response, error, danger)
+  // Stage 1, 2: 대화 메시지만 (user_stt, stt_response, narration, error)
+  // Stage 3: 대화 + 위험 메시지 (user_stt, stt_response, narration, error, danger)
   const visible = (messages || []).filter((m) => {
     if (m.type === 'danger') {
       return stage === 3; // danger는 Stage 3일 때만 표시
     }
-    return true; // user_stt, stt_response, error는 모두 표시
+    return true; // user_stt, stt_response, narration, error는 모두 표시
   });
 
   return (
@@ -121,8 +121,21 @@ function MessageRow({ msg }) {
     );
   }
 
-  // SIA bubbles: stt_response, danger
+  // SIA bubbles: stt_response, narration, danger
   const isDanger = msg.type === 'danger';
+  const isNarration = msg.type === 'narration';
+
+  // 라벨: stt_response → "시아", narration → "시아 (묘사)", danger → "시아"
+  const label = isNarration ? `시아 (묘사) ${ts}` : `시아 ${ts}`;
+
+  // 배경색: danger → 빨간 배경, narration → 연보라 배경, 기본 → 흰색
+  const bubbleBg = isDanger ? '#FFF0F0' : isNarration ? '#F3E5F5' : '#fff';
+  const bubbleBorder = isDanger
+    ? '1px solid #FFCDD2'
+    : isNarration
+      ? '1px solid #E1BEE7'
+      : '1px solid #eee';
+
   return (
     <div
       style={{
@@ -152,14 +165,12 @@ function MessageRow({ msg }) {
       </div>
       <div>
         <div style={{ fontSize: 11, color: 'grey', marginBottom: 2 }}>
-          시아 {ts}
+          {label}
         </div>
         <div
           style={{
-            background: isDanger ? '#FFF0F0' : '#fff',
-            border: isDanger
-              ? '1px solid #FFCDD2'
-              : '1px solid #eee',
+            background: bubbleBg,
+            border: bubbleBorder,
             borderRadius: 12,
             padding: '10px 14px',
             maxWidth: '85%',

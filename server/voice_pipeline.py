@@ -30,6 +30,8 @@ class VoicePipeline:
         self._running = False
         self._chat_history: list[dict] = []  # {"role": "user"|"assistant", "content": str}
         self._max_history = 20  # 10턴 = 20 메시지
+        self._consecutive_fails = 0
+        self._cooldown_steps = [2, 5, 10, 30]  # 초 단위 쿨다운 단계
 
     async def run(self):
         """메인 턴 루프. 한 번에 한 턴만 실행."""
@@ -82,12 +84,17 @@ class VoicePipeline:
         except Exception as e:
             print(f"[VoicePipeline] LLM 에러: {e}")
             await self._play_fallback(f"LLM 에러: {type(e).__name__}")
+            await self._cooldown_on_fail()
             return
 
         if not response:
             print("[VoicePipeline] LLM 응답 없음")
             await self._play_fallback("LLM 응답 없음")
+            await self._cooldown_on_fail()
             return
+
+        # LLM 성공 — 연속 실패 카운터 리셋
+        self._consecutive_fails = 0
 
         # 히스토리 저장
         self._chat_history.append({"role": "user", "content": text})
@@ -132,6 +139,14 @@ class VoicePipeline:
             print(f"[VoicePipeline] TTS 오류: {e}")
             await broadcast({"type": "error", "message": f"TTS 오류: {type(e).__name__}", "timestamp": int(time.time() * 1000)})
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+
+    async def _cooldown_on_fail(self):
+        """연속 LLM 실패 시 점진적 쿨다운 대기."""
+        self._consecutive_fails += 1
+        idx = min(self._consecutive_fails - 1, len(self._cooldown_steps) - 1)
+        delay = self._cooldown_steps[idx]
+        print(f"[VoicePipeline] 연속 실패 {self._consecutive_fails}회 → {delay}초 쿨다운")
+        await asyncio.sleep(delay)
 
     async def _play_fallback(self, error_msg: str):
         """에러 발생 시 fallback 오디오 재생."""
@@ -180,6 +195,7 @@ class VoicePipeline:
     def reset(self):
         """세션 리셋 — 히스토리 초기화 + 파이프라인 중지."""
         self._chat_history.clear()
+        self._consecutive_fails = 0
         # Note: _running은 stop()으로 별도 제어
 
     @property

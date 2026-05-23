@@ -1,7 +1,7 @@
 /**
  * WebSocket 커스텀 훅
  * 메시지 타입별 분류 저장:
- * - messages: 대화 메시지만 (user_stt, stt_response, error)
+ * - messages: 대화 메시지만 (user_stt, stt_response, narration, error)
  * - voiceState: 최신 음성 상태 (voice_listening, tts_start, tts_done)
  * - latestDanger: 최신 위험 정보 (danger, Stage 3 전용)
  * - latestObjects: 최신 감지 객체 (narration, danger에서 추출)
@@ -25,8 +25,8 @@ export function useWebSocket(url) {
       const data = JSON.parse(e.data);
       const type = data.type;
 
-      // 1. 대화 메시지만 저장 (user_stt, stt_response, error)
-      if (type === 'user_stt' || type === 'stt_response' || type === 'error') {
+      // 1. 대화 메시지 저장 (user_stt, stt_response, narration, error)
+      if (type === 'user_stt' || type === 'stt_response' || type === 'narration' || type === 'error') {
         setMessages((prev) => [...prev.slice(-50), data]);
       }
 

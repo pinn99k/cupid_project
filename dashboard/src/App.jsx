@@ -7,7 +7,8 @@ function App() {
   const [page, setPage] = useState('start')
   const [stage, setStage] = useState(1)
 
-  const { ws, messages, connected, send, clearMessages } = useWebSocket('ws://localhost:8000/ws')
+  const useWs = useWebSocket('ws://localhost:8000/ws')
+  const { ws, messages, connected, send, clearMessages } = useWs
 
   useEffect(() => {
     const last = messages[messages.length - 1]
@@ -32,11 +33,11 @@ function App() {
   return (
     <DashboardPage
       send={send}
-      messages={messages}
       connected={connected}
       stage={stage}
       setStage={setStage}
       ws={ws}
+      useWs={useWs}
     />
   )
 }

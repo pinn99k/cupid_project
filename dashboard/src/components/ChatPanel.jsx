@@ -5,14 +5,22 @@ function formatTime(ts) {
   return d.toLocaleTimeString('ko-KR');
 }
 
-export default function ChatPanel({ messages }) {
+export default function ChatPanel({ messages, stage }) {
   const bottomRef = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const visible = (messages || []).filter((m) => m.type !== 'init_state');
+  // Stage별 필터링:
+  // Stage 1, 2: 대화 메시지만 (user_stt, stt_response, error)
+  // Stage 3: 대화 + 위험 메시지 (user_stt, stt_response, error, danger)
+  const visible = (messages || []).filter((m) => {
+    if (m.type === 'danger') {
+      return stage === 3; // danger는 Stage 3일 때만 표시
+    }
+    return true; // user_stt, stt_response, error는 모두 표시
+  });
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -45,22 +53,6 @@ export default function ChatPanel({ messages }) {
 
 function MessageRow({ msg }) {
   const ts = formatTime(msg.timestamp);
-
-  // ack — centered system message
-  if (msg.type === 'ack') {
-    return (
-      <div
-        style={{
-          textAlign: 'center',
-          fontSize: 12,
-          color: 'grey',
-          margin: '8px 0',
-        }}
-      >
-        &middot; {msg.message || `${msg.event || ''}`}
-      </div>
-    );
-  }
 
   // error — centered red
   if (msg.type === 'error') {
@@ -129,7 +121,7 @@ function MessageRow({ msg }) {
     );
   }
 
-  // SIA bubbles: stt_response, narration, danger
+  // SIA bubbles: stt_response, danger
   const isDanger = msg.type === 'danger';
   return (
     <div
@@ -174,7 +166,7 @@ function MessageRow({ msg }) {
             fontSize: 14,
           }}
         >
-          {msg.message}
+          {isDanger ? `위험: ${msg.object}` : msg.message}
         </div>
       </div>
     </div>

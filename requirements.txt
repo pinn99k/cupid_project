@@ -9,3 +9,5 @@ groq
 edge-tts>=7.0.0
 pygame>=2.5.0
 numpy>=1.24.0
+SpeechRecognition>=3.10
+sounddevice>=0.4

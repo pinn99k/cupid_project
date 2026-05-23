@@ -28,5 +28,7 @@ export function useWebSocket(url) {
     }
   }, []);
 
-  return { ws: wsRef.current, messages, connected, send };
+  const clearMessages = useCallback(() => setMessages([]), []);
+
+  return { ws: wsRef.current, messages, connected, send, clearMessages };
 }

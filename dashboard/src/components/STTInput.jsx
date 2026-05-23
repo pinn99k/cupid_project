@@ -4,7 +4,7 @@ const STATE_CONFIG = {
     border: '1px solid #eee',
     dotColor: '#bbb',
     dotAnim: 'none',
-    label: '마이크를 눌러 시작',
+    label: '대기 중...',
     labelColor: '#999',
   },
   listening: {
@@ -13,6 +13,14 @@ const STATE_CONFIG = {
     dotColor: '#4CAF50',
     dotAnim: 'pulse 1.5s infinite',
     label: '음성 인식 중...',
+    labelColor: '#333',
+  },
+  processing: {
+    bg: 'linear-gradient(to right, rgba(33,150,243,0.15), rgba(33,150,243,0.05))',
+    border: '1px solid rgba(33,150,243,0.3)',
+    dotColor: '#2196F3',
+    dotAnim: 'pulse 1.5s infinite',
+    label: '생각하는 중...',
     labelColor: '#333',
   },
   responding: {
@@ -25,7 +33,7 @@ const STATE_CONFIG = {
   },
 };
 
-export default function STTInput({ voiceState = 'idle', onToggle }) {
+export default function STTInput({ voiceState = 'idle' }) {
   const cfg = STATE_CONFIG[voiceState] || STATE_CONFIG.idle;
 
   return (
@@ -41,7 +49,6 @@ export default function STTInput({ voiceState = 'idle', onToggle }) {
         style={{
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
           padding: '10px 16px',
           borderRadius: 24,
           background: cfg.bg,
@@ -49,7 +56,7 @@ export default function STTInput({ voiceState = 'idle', onToggle }) {
           transition: 'all 0.3s ease',
         }}
       >
-        {/* Left: dot + label */}
+        {/* dot + label */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div
             style={{
@@ -64,23 +71,6 @@ export default function STTInput({ voiceState = 'idle', onToggle }) {
             {cfg.label}
           </span>
         </div>
-
-        {/* Right: mic button (마스터 토글) */}
-        <button
-          onClick={onToggle}
-          style={{
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            fontSize: 20,
-            padding: 4,
-            filter: voiceState === 'idle' ? 'grayscale(100%)' : 'none',
-            opacity: voiceState === 'idle' ? 0.5 : 1,
-          }}
-          title={voiceState === 'idle' ? '음성 인식 시작' : '음성 인식 중지'}
-        >
-          🎤
-        </button>
       </div>
     </>
   );

@@ -19,7 +19,12 @@ from ai_core.narration import narrate_async
 from ai_core.tts import get_tts_cache
 from server.main_server import app, set_frame, get_frame
 from server.websocket_handler import broadcast
-from server.config import SERVER_HOST, SERVER_PORT, WEBCAM_INDEX
+from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX,
+                           MIC_DEVICE_INDEX, VAD_SILENCE_THRESHOLD,
+                           VAD_SILENCE_DURATION, VAD_MAX_DURATION, STT_LANGUAGE)
+from server.mic import MicCapture
+from server.stt import STTClient
+from server.voice_pipeline import VoicePipeline
 from utils.latency_logger import log, elapsed
 
 # ---------------------------------------------------------------------------
@@ -34,6 +39,13 @@ NARRATION_INTERVAL = 5.0         # LLM 공간 묘사 간격 (초)
 # shutdown 시 cancel 용
 _frame_task: asyncio.Task | None = None
 _ai_task: asyncio.Task | None = None
+_voice_task: asyncio.Task | None = None
+
+# TTS 전역 Lock (voice pipeline + narration/danger 공유)
+_tts_lock = asyncio.Lock()
+
+# VoicePipeline 인스턴스 (main_server.py에서 import 가능)
+voice_pipeline: VoicePipeline | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -149,23 +161,24 @@ async def _ai_loop():
                 last_danger_obj = danger["object"]
                 last_danger_time = now
                 log("danger_detected")
-                await broadcast({"type": "tts_start"})
-                audio.play(danger["audio_file"], interrupt=True)
-                await broadcast({
-                    "type": "danger",
-                    "object": danger["object"],
-                    "direction": danger["direction"],
-                    "distance_cm": danger["distance_cm"],
-                    "message": f"위험: {danger['object']}",
-                    "stage": srv.app_state.current_stage,
-                    "audio_file": danger["audio_file"],
-                    "timestamp": int(time.time() * 1000),
-                })
-                elapsed("detect_start", "danger_detected")
-                # 위험 오디오 재생 완료 대기 → STT 복귀
-                while await asyncio.to_thread(audio.is_playing):
-                    await asyncio.sleep(0.2)
-                await broadcast({"type": "tts_done"})
+                async with _tts_lock:
+                    await broadcast({"type": "tts_start"})
+                    audio.play(danger["audio_file"], interrupt=True)
+                    await broadcast({
+                        "type": "danger",
+                        "object": danger["object"],
+                        "direction": danger["direction"],
+                        "distance_cm": danger["distance_cm"],
+                        "message": f"위험: {danger['object']}",
+                        "stage": srv.app_state.current_stage,
+                        "audio_file": danger["audio_file"],
+                        "timestamp": int(time.time() * 1000),
+                    })
+                    elapsed("detect_start", "danger_detected")
+                    # 위험 오디오 재생 완료 대기 → STT 복귀
+                    while await asyncio.to_thread(audio.is_playing):
+                        await asyncio.sleep(0.2)
+                    await broadcast({"type": "tts_done"})
             # 위험 감지 시에도 프레임은 계속 갱신됨 (별도 루프)
             await asyncio.sleep(0.5)
             continue
@@ -183,7 +196,7 @@ async def _ai_loop():
 
 
 async def _handle_narration(enriched, tts, audio, stage):
-    """LLM + TTS를 백그라운드 태스크로 처리. 반이중: tts_start/tts_done."""
+    """LLM + TTS를 백그라운드 태스크로 처리. tts_lock으로 직렬화."""
     text = await narrate_async(enriched)
     if text:
         await broadcast({
@@ -193,19 +206,21 @@ async def _handle_narration(enriched, tts, audio, stage):
             "stage": stage,
             "timestamp": int(time.time() * 1000),
         })
-        filepath = await tts.get_or_create(text)
-        if filepath:
+        async with _tts_lock:
+            filepath = await tts.get_or_create(text)
+            if filepath:
+                await broadcast({"type": "tts_start"})
+                audio.play_path(str(filepath))
+                while await asyncio.to_thread(audio.is_playing):
+                    await asyncio.sleep(0.2)
+                await broadcast({"type": "tts_done"})
+    else:
+        async with _tts_lock:
             await broadcast({"type": "tts_start"})
-            audio.play_path(str(filepath))
+            audio.play("buffer_01.mp3")
             while await asyncio.to_thread(audio.is_playing):
                 await asyncio.sleep(0.2)
             await broadcast({"type": "tts_done"})
-    else:
-        await broadcast({"type": "tts_start"})
-        audio.play("buffer_01.mp3")
-        while await asyncio.to_thread(audio.is_playing):
-            await asyncio.sleep(0.2)
-        await broadcast({"type": "tts_done"})
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +228,7 @@ async def _handle_narration(enriched, tts, audio, stage):
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup():
-    global _frame_task, _ai_task
+    global _frame_task, _ai_task, _voice_task, voice_pipeline
     print("[SIA] 초기화 시작...")
     load_model()
     llm_init()
@@ -222,14 +237,26 @@ async def startup():
     # 두 루프를 독립적으로 시작
     _frame_task = asyncio.create_task(_frame_loop())
     _ai_task = asyncio.create_task(_ai_loop())
-    print("[SIA] 초기화 완료. 프레임 루프 + AI 루프 시작.")
+    # VoicePipeline 초기화
+    mic = MicCapture(
+        device_index=MIC_DEVICE_INDEX,
+        silence_threshold=VAD_SILENCE_THRESHOLD,
+        silence_duration=VAD_SILENCE_DURATION,
+        max_duration=VAD_MAX_DURATION,
+    )
+    stt = STTClient(language=STT_LANGUAGE)
+    voice_pipeline = VoicePipeline(mic=mic, stt=stt, tts_lock=_tts_lock)
+    _voice_task = asyncio.create_task(voice_pipeline.run())
+    print("[SIA] 초기화 완료. 프레임 루프 + AI 루프 + 음성 파이프라인 시작.")
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    global _frame_task, _ai_task
+    global _frame_task, _ai_task, _voice_task, voice_pipeline
     print("[SIA] 서버 종료 시작...")
-    for t in (_frame_task, _ai_task):
+    if voice_pipeline:
+        voice_pipeline.stop()
+    for t in (_frame_task, _ai_task, _voice_task):
         if t and not t.done():
             t.cancel()
             try:

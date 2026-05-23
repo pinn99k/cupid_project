@@ -39,3 +39,17 @@ SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8000"))
 # 카메라 설정
 # 0 = 노트북 내장캠 (기본값), 1+ = 외장 USB 캠
 WEBCAM_INDEX: int = int(os.getenv("WEBCAM_INDEX", "0"))
+
+# 마이크 설정
+# None = 시스템 기본 마이크, 숫자 = 장치 인덱스
+MIC_DEVICE_INDEX = os.getenv("MIC_DEVICE_INDEX")
+if MIC_DEVICE_INDEX is not None:
+    MIC_DEVICE_INDEX = int(MIC_DEVICE_INDEX)
+
+# VAD 설정
+VAD_SILENCE_THRESHOLD: int = int(os.getenv("VAD_SILENCE_THRESHOLD", "500"))
+VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "1.5"))
+VAD_MAX_DURATION: float = float(os.getenv("VAD_MAX_DURATION", "10"))
+
+# STT 설정
+STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "ko-KR")

@@ -237,22 +237,11 @@ class TestHandleDashboardMessage:
 
     @pytest.mark.asyncio
     @patch("server.main_server.broadcast", new_callable=AsyncMock)
-    async def test_stt_empty_text_ignored(self, mock_broadcast):
-        msg = {"stt_text": "   "}
-        await handle_dashboard_message(msg)
-        mock_broadcast.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    @patch("server.main_server.broadcast", new_callable=AsyncMock)
-    async def test_stt_broadcasts_user_text_first(self, mock_broadcast):
-        """STT 수신 시 user_stt를 먼저 브로드캐스트하는지 검증."""
+    async def test_stt_text_ignored_by_dashboard_handler(self, mock_broadcast):
+        """STT는 서버 VoicePipeline이 처리 — 대시보드 핸들러는 무시."""
         msg = {"stt_text": "안녕하세요"}
         await handle_dashboard_message(msg)
-        # 최소 1번은 호출 (user_stt)
-        assert mock_broadcast.await_count >= 1
-        first_sent = mock_broadcast.call_args_list[0][0][0]
-        assert first_sent["type"] == "user_stt"
-        assert first_sent["message"] == "안녕하세요"
+        mock_broadcast.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("server.main_server.broadcast", new_callable=AsyncMock)

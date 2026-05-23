@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "design-preview",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "9090", "--directory", "C:\\Users\\sswoo\\OneDrive\\바탕 화면"],
+      "port": 9090
+    }
+  ]
+}

@@ -10,6 +10,7 @@ import hashlib
 import shutil
 import wave
 from pathlib import Path
+import time
 
 from google import genai
 from google.genai import types
@@ -59,28 +60,43 @@ class TTSCache:
         key = self._hash(text)
         return self._index.get(key)
     
-    def _gemini_tts(self, text: str) -> bytes | None:
-        """Gemini로 음성 생성, 날것 소리 데이터(pcm bytes) 반환 / 실패 시 None."""
-        try:
-            prompt = f"어린아이에게 다정하게 말하는 친절한 언니처럼 말해줘. 목소리는 밝고 따뜻하고 살짝 들뜬 느낌으로, 천천히 또박또박 말해줘. 아이를 안심시키고 격려하는 느낌이어야 해. 한국어 발음을 정확하게 살려서 또박또박 발음해줘. 특히 받침과 어미를 분명하게 발음해야 해.: {text}"
-            response = _genai_client.models.generate_content(
-                model=TTS_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["AUDIO"],
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name=TTS_VOICE
+    def _gemini_tts(self, text: str, max_retries: int = 2) -> bytes | None:
+        """Gemini로 음성 생성, 날것 소리 데이터(pcm bytes) 반환 / 실패 시 None
+        500 INTERNAL 같은 일시적 에러는 자동 재시도
+        """
+        prompt = f"어린아이에게 다정하게 말하는 친절한 언니처럼 말해줘. 목소리는 밝고 따뜻하고 살짝 들뜬 느낌으로, 천천히 또박또박 말해줘. 아이를 안심시키고 격려하는 느낌이어야 해. 한국어 발음을 정확하게 살려서 또박또박 발음해줘. 특히 받침과 어미를 분명하게 발음해야 해.: {text}"
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = _genai_client.models.generate_content(
+                    model=TTS_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=types.SpeechConfig(
+                            voice_config=types.VoiceConfig(
+                                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                    voice_name=TTS_VOICE
+                                )
                             )
-                        )
+                        ),
                     ),
-                ),
-            )
-            return response.candidates[0].content.parts[0].inline_data.data
-        except Exception as e:
-            print(f"[TTS ERROR] {e}")
-            return None
+                )
+                return response.candidates[0].content.parts[0].inline_data.data
+            except Exception as e:
+                error_msg = str(e)
+                is_retriable = "500" in error_msg or "INTERNAL" in error_msg or "503" in error_msg
+
+                if attempt < max_retries and is_retriable:
+                    wait = (attempt + 1) * 1.5  # 1.5초, 3초
+                    print(f"[TTS] 재시도 {attempt + 1}/{max_retries} ({wait}초 대기): {error_msg[:80]}")
+                    time.sleep(wait)
+                    continue
+
+                print(f"[TTS ERROR] {e}")
+                return None
+
+        return None
     
     async def _generate_and_cache(self, text: str) -> Path | None:
         """Gemini로 TTS 생성 후 캐시에 저장"""

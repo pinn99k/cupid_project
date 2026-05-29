@@ -6,10 +6,7 @@ LLM API 호출 (비블로킹, asyncio.to_thread 사용)
 
 import asyncio
 from openai import OpenAI
-from server.config import (
-    LLM_PROVIDER, LLM_MODEL,
-    GROQ_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY,
-)
+from server.config import LLM_MODEL, GEMINI_API_KEY
 from utils.latency_logger import log
 
 SYSTEM_PROMPT = """너는 '시아'야. 시각장애가 있는 4~10세 아이의 보행을 도와주는, 밝고 다정한 언니 같은 AI 친구야.
@@ -27,17 +24,15 @@ SYSTEM_PROMPT = """너는 '시아'야. 시각장애가 있는 4~10세 아이의 
 client = None
 
 def init():
-    """Groq LLM 클라이언트 초기화"""
     global client
-
-    if GROQ_API_KEY:
+    if GEMINI_API_KEY:
         client = OpenAI(
-            api_key=GROQ_API_KEY,
-            base_url="https://api.groq.com/openai/v1",
+            api_key=GEMINI_API_KEY,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
-        print(f"[LLM] 초기화 완료: provider=groq, model={LLM_MODEL}")
+        print(f"[LLM] 초기화 완료: provider=gemini, model={LLM_MODEL}")
     else:
-        print("[LLM] 경고: GROQ_API_KEY 미설정. LLM 비활성 (TTS는 정상 작동)")
+        print("[LLM] 경고: GEMINI_API_KEY 미설정")
 
 
 def _call_sync(system_prompt: str, user_msg: str, max_tokens: int = 100) -> str | None:

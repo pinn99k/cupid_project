@@ -19,10 +19,20 @@ def _require(key: str) -> str:
     return value
 
 
+def _env_value(key: str, default: str) -> str:
+    """환경변수 값에 실수로 들어간 'KEY=' 접두어를 제거."""
+    value = os.getenv(key, default).strip()
+    prefix = f"{key}="
+    while value.startswith(prefix):
+        print(f"[config] 경고: {key} 값에 중복 접두어가 있어 보정합니다.")
+        value = value[len(prefix):].strip()
+    return value
+
+
 # LLM 공급자 및 모델
 # LLM_PROVIDER: groq | gemini | openai
-LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq")
-LLM_MODEL: str = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
+LLM_PROVIDER: str = _env_value("LLM_PROVIDER", "groq")
+LLM_MODEL: str = _env_value("LLM_MODEL", "llama-3.3-70b-versatile")
 
 # API 키 (사용하는 공급자 키만 있으면 됨)
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")

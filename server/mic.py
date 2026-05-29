@@ -108,7 +108,7 @@ class MicCapture:
                     total_frames += 1
 
         except Exception as e:
-            print(f"[MicCapture] 녹음 오류: {e}")
+            print(f"[MicCapture] 녹음 오류: {self._format_recording_error(e)}")
             return None
 
         if not recorded:
@@ -138,6 +138,23 @@ class MicCapture:
             wf.setframerate(self.sample_rate)
             wf.writeframes(audio_data.tobytes())
         return buf.getvalue()
+
+    @staticmethod
+    def _format_recording_error(error: Exception) -> str:
+        """마이크 입력 오류에 현장에서 바로 쓸 수 있는 안내를 덧붙인다."""
+        message = str(error)
+        hints = []
+        if "-50" in message or "PaMacCore" in message or "Error opening InputStream" in message:
+            hints.extend(
+                [
+                    "macOS 마이크 권한을 확인하세요.",
+                    "마이크를 쓰는 Zoom/Discord/카카오톡 같은 앱을 종료하세요.",
+                    "python scripts/check_devices.py로 입력 장치 인덱스를 확인한 뒤 MIC_DEVICE_INDEX를 설정하세요.",
+                ]
+            )
+        if hints:
+            return f"{message} | 해결 힌트: {' / '.join(hints)}"
+        return message
 
     @staticmethod
     def list_devices() -> list[dict]:

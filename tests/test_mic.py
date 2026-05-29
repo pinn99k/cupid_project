@@ -231,6 +231,15 @@ class TestRecordSync:
 
         assert result is None
 
+    def test_formats_macos_portaudio_error_with_hints(self):
+        """macOS PortAudio 입력 오류에는 권한/장치 안내를 덧붙인다."""
+        message = MicCapture._format_recording_error(
+            Exception("PaMacCore error -50")
+        )
+
+        assert "macOS 마이크 권한" in message
+        assert "MIC_DEVICE_INDEX" in message
+
 
 # ---------------------------------------------------------------------------
 # listen() 비동기 테스트

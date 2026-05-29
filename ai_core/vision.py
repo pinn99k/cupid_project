@@ -1,19 +1,29 @@
 """
-YOLO 객체 인식 + bbox 후처리 모듈.
+YOLO 객체 인식 + bbox 후처리
 - load_model(): YOLO 모델 로드
-- detect(frame): 프레임에서 객체 감지 → raw detections
-- enrich(detections, frame_w, frame_h, ultrasonic_cm): 방향/거리 추정 → enriched JSON
+- detect(frame): 프레임 → 감지된 물체 목록
+- enrich(...): 물체에 방향/거리 정보 추가 → 최종 JSON
 """
 
 from ultralytics import YOLO
 from server.config import YOLO_MODEL, YOLO_CONF_THRESHOLD
 from utils.latency_logger import log
 
+
+# 카메라 보정값: 디바이스(ESP32-CAM) 연결 후 실제 테스트로 조정 필요
+# 방향 판정 기준 (화면 가로 비율)
+LEFT_BOUND = 0.33
+RIGHT_BOUND = 0.66
+
+# 거리 판정 기준 (화면 대비 물체 넓이 비율)
+NEAR_AREA = 0.20
+FAR_AREA = 0.05
+
 model = None
 
 
 def load_model():
-    """YOLO 모델 로드."""
+    """YOLO 모델 로드 (프로그램 시작 시 1회)"""
     global model
     log("yolo_load_start")
     model = YOLO(YOLO_MODEL)
@@ -21,20 +31,9 @@ def load_model():
 
 
 def detect(frame):
-    """
-    웹캠 프레임에서 객체 감지.
-
-    Args:
-        frame: numpy array (BGR)
-    Returns:
-        list of dict {label, x, y, w, h, conf}
-    """
+    """프레임에서 물체 감지 → [{label, x, y, w, h, conf}, ...]"""
     log("yolo_detect_start")
-    results = model.predict(
-        source=frame,
-        conf=YOLO_CONF_THRESHOLD,
-        verbose=False
-    )[0]
+    results = model.predict(source=frame, conf=YOLO_CONF_THRESHOLD, verbose=False)[0]
 
     detections = []
     for box in results.boxes:
@@ -45,50 +44,60 @@ def detect(frame):
             "y": y1,
             "w": x2 - x1,
             "h": y2 - y1,
-            "conf": float(box.conf[0])
+            "conf": float(box.conf[0]),
         })
     log("yolo_detect_end")
     return detections
 
 
-def enrich(detections, frame_w, frame_h, ultrasonic_cm=None):
-    """
-    bbox → 방향(left/center/right) + 거리(near/mid/far) + 초음파 매칭.
+def _get_direction(center_x_ratio):
+    """물체 중심의 가로 위치 → 왼쪽/가운데/오른쪽"""
+    if center_x_ratio < LEFT_BOUND:
+        return "left"
+    if center_x_ratio > RIGHT_BOUND:
+        return "right"
+    return "center"
 
-    Args:
-        detections: detect() 반환값
-        frame_w, frame_h: 프레임 크기
-        ultrasonic_cm: HC-SR04P 거리값 (Phase 1에서는 None)
-    Returns:
-        interface_contract 스키마의 enriched JSON
-    """
-    enriched = []
+
+def _get_distance(area_ratio):
+    """물체 넓이 비율 → 가까이/중간/멀리"""
+    if area_ratio > NEAR_AREA:
+        return "near"
+    if area_ratio < FAR_AREA:
+        return "far"
+    return "mid"
+
+
+def enrich(detections, frame_w, frame_h, ultrasonic_cm=None):
+    """각 물체에 방향/거리 정보를 더한 최종 JSON 반환"""
+    objects = []
     center_objects = []
 
     for det in detections:
-        cx = (det["x"] + det["w"] / 2) / frame_w
-        area = (det["w"] * det["h"]) / (frame_w * frame_h)
+        center_x_ratio = (det["x"] + det["w"] / 2) / frame_w
+        area_ratio = (det["w"] * det["h"]) / (frame_w * frame_h)
 
-        direction = "left" if cx < 0.33 else ("right" if cx > 0.66 else "center")
-        distance_est = "near" if area > 0.20 else ("far" if area < 0.05 else "mid")
+        direction = _get_direction(center_x_ratio)
+        distance = _get_distance(area_ratio)
 
         if direction == "center":
-            center_objects.append((det["label"], area))
+            center_objects.append((det["label"], area_ratio))
 
-        enriched.append({
+        objects.append({
             "label": det["label"],
             "direction": direction,
-            "distance_est": distance_est,
-            "bbox_ratio": round(area, 3),
-            "confidence": round(det["conf"], 2)
+            "distance_est": distance,
+            "bbox_ratio": round(area_ratio, 3),
+            "confidence": round(det["conf"], 2),
         })
 
+    # 정면 물체 중 가장 큰(가까운) 것을 초음파 매칭 대상으로
     ultrasonic_target = None
     if center_objects:
         ultrasonic_target = max(center_objects, key=lambda x: x[1])[0]
 
     return {
-        "objects": enriched,
+        "objects": objects,
         "ultrasonic_cm": ultrasonic_cm,
-        "ultrasonic_target": ultrasonic_target
+        "ultrasonic_target": ultrasonic_target,
     }

@@ -58,7 +58,7 @@ if MIC_DEVICE_INDEX is not None:
 
 # VAD 설정
 VAD_SILENCE_THRESHOLD: int = int(os.getenv("VAD_SILENCE_THRESHOLD", "500"))
-VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "1.5"))
+VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "0.6"))
 VAD_MAX_DURATION: float = float(os.getenv("VAD_MAX_DURATION", "10"))
 
 # STT 설정

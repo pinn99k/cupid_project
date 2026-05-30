@@ -88,6 +88,12 @@ def enrich(detections, frame_w, frame_h, ultrasonic_cm=None):
             "direction": direction,
             "distance_est": distance,
             "bbox_ratio": round(area_ratio, 3),
+            "bbox": {
+                "x": round(det["x"] / frame_w, 4),
+                "y": round(det["y"] / frame_h, 4),
+                "w": round(det["w"] / frame_w, 4),
+                "h": round(det["h"] / frame_h, 4),
+            },
             "confidence": round(det["conf"], 2),
         })
 

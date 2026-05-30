@@ -40,7 +40,7 @@ def test_danger():
     )
     assert result is not None, "Stage 3 + 20cm에서 emergency여야 함"
     assert result["level"] == "emergency"
-    assert result["audio_file"] == "warn_emergency.mp3"
+    assert result["audio_file"] == "warn_emergency.wav"
     print(f"[PASS] Case 3: Stage 3 + 20cm → {result['level']}")
 
     # Case 4: Stage 3 + YOLO near person → warning

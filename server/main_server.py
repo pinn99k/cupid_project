@@ -64,6 +64,8 @@ class AppState:
 
 
 app_state = AppState()
+_voice_pipeline = None
+_cancel_narration = lambda: None
 
 app = FastAPI(title="SIA MVP Server")
 app.add_middleware(
@@ -83,6 +85,18 @@ def get_state() -> dict:
     }
 
 
+def set_voice_pipeline(pipeline):
+    """세션 리셋 대상 음성 파이프라인을 등록."""
+    global _voice_pipeline
+    _voice_pipeline = pipeline
+
+
+def set_cancel_narration(callback):
+    """세션 정지 시 자동 묘사를 취소할 콜백을 등록."""
+    global _cancel_narration
+    _cancel_narration = callback
+
+
 # ---------------------------------------------------------------------------
 # 세션 리셋 — 오디오/상태를 한 번에 정리
 # ---------------------------------------------------------------------------
@@ -91,26 +105,17 @@ def reset_session():
     stop_learning, new_session 양쪽에서 호출."""
     app_state.learning_active = False
     app_state.current_stage = 1
+    _cancel_narration()
 
     # Voice pipeline 히스토리 리셋
-    try:
-        from main import voice_pipeline
-        if voice_pipeline:
-            voice_pipeline.reset()
-    except ImportError:
-        pass
+    if _voice_pipeline:
+        _voice_pipeline.reset()
 
     # 오디오 리셋
     try:
         from ai_core.audio_manager import get_audio_manager
         am = get_audio_manager()
-        am.stop()
-        # 큐에 남은 대기 항목 비우기
-        while not am._queue.empty():
-            try:
-                am._queue.get_nowait()
-            except Exception:
-                break
+        am.stop(clear_queue=True)
     except Exception as e:
         print(f"[SERVER] 오디오 리셋 오류: {e}")
 
@@ -177,9 +182,14 @@ async def handle_dashboard_message(msg: dict):
 
         elif event == "fallback":
             try:
-                from ai_core.audio_manager import get_audio_manager
-                audio_file = msg.get("audio_file", "buffer_01.mp3")
-                get_audio_manager().play(audio_file)
+                from ai_core.audio_manager import PRIORITY_DANGER, PRIORITY_FALLBACK, get_audio_manager
+                audio_file = msg.get("audio_file", "buffer_01.wav")
+                urgent = audio_file.startswith("warn_")
+                get_audio_manager().play(
+                    audio_file,
+                    priority=PRIORITY_DANGER if urgent else PRIORITY_FALLBACK,
+                    interrupt=urgent,
+                )
                 print(f"[SERVER] Fallback 재생: {audio_file}")
             except Exception as e:
                 print(f"[SERVER] fallback 오류: {e}")
@@ -202,6 +212,13 @@ async def health():
         "stage": app_state.current_stage,
         "learning_active": app_state.learning_active,
     }
+
+
+@app.get("/preflight")
+async def preflight():
+    from server.preflight import run_preflight
+
+    return run_preflight()
 
 
 # ---------------------------------------------------------------------------

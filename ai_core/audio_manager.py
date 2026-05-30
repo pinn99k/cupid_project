@@ -1,98 +1,165 @@
 """
-오디오 매니저 (별도 스레드에서 pygame 재생, Lock 보호)
-- AudioManager: 스레드 분리 오디오 재생 클래스
-- get_audio_manager(): 싱글톤 인스턴스 반환
+우선순위 기반 오디오 재생 매니저.
+- 위험 경고 > 사용자 대화 > 자동 묘사 > 수동 fallback
+- 요청별 started / finished 이벤트로 실제 재생 완료까지 대기 가능
 """
 
-import threading
-import queue
-import pygame
+import asyncio
+from dataclasses import dataclass, field
+from itertools import count
 from pathlib import Path
+import queue
+import threading
+
+import pygame
+
 from utils.latency_logger import log
 
 FALLBACK_DIR = Path("audio/fallback")
 
+PRIORITY_DANGER = 0
+PRIORITY_CONVERSATION = 10
+PRIORITY_NARRATION = 20
+PRIORITY_FALLBACK = 30
+
+
+@dataclass(order=True)
+class PlaybackRequest:
+    """우선순위 큐에 넣는 오디오 재생 요청."""
+
+    priority: int
+    sequence: int
+    filepath: str = field(compare=False)
+    started: threading.Event = field(default_factory=threading.Event, compare=False)
+    finished: threading.Event = field(default_factory=threading.Event, compare=False)
+    cancelled: threading.Event = field(default_factory=threading.Event, compare=False)
+
 
 class AudioManager:
-    """별도 스레드에서 오디오 재생 / Lock으로 동시 재생 방지"""
+    """오디오를 한 스레드에서 직렬 재생하고 요청별 완료 상태를 제공."""
 
     def __init__(self):
-        self._lock = threading.Lock()
-        self._queue: queue.Queue = queue.Queue()
+        self._queue: queue.PriorityQueue[PlaybackRequest] = queue.PriorityQueue()
+        self._sequence = count()
         self._running = True
+        self._current: PlaybackRequest | None = None
+        self._state_lock = threading.Lock()
         pygame.mixer.init()
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
 
-    def play(self, filename: str, interrupt: bool = False):
-        """
-        Fallback 디렉토리 내 파일 재생 요청
-        interrupt=True: Stage 3 긴급 → 현재 중단 후 즉시 재생
-        """
-        filepath = FALLBACK_DIR / filename
-        if not filepath.exists():
-            print(f"[AUDIO] 파일 없음: {filepath}")
-            return
-        self._queue.put((str(filepath), interrupt))
+    def play(
+        self,
+        filename: str,
+        *,
+        priority: int = PRIORITY_FALLBACK,
+        interrupt: bool = False,
+    ) -> PlaybackRequest | None:
+        """fallback 디렉토리의 음원 재생 요청."""
+        return self.play_path(
+            str(FALLBACK_DIR / filename),
+            priority=priority,
+            interrupt=interrupt,
+        )
 
-    def play_path(self, filepath: str, interrupt: bool = False):
-        """절대 경로로 재생 (TTS 캐시 파일용)"""
+    def play_path(
+        self,
+        filepath: str,
+        *,
+        priority: int = PRIORITY_CONVERSATION,
+        interrupt: bool = False,
+    ) -> PlaybackRequest | None:
+        """파일 재생 요청. interrupt=True이면 현재 음성과 대기열을 중단."""
         if not Path(filepath).exists():
             print(f"[AUDIO] 파일 없음: {filepath}")
-            return
-        self._queue.put((filepath, interrupt))
+            return None
 
-    def stop(self):
-        """현재 재생 중단"""
-        pygame.mixer.music.stop()
+        if interrupt:
+            self.stop(clear_queue=True)
+
+        request = PlaybackRequest(priority, next(self._sequence), filepath)
+        self._queue.put(request)
+        return request
+
+    async def wait(self, request: PlaybackRequest | None) -> bool:
+        """실제 재생 완료까지 비동기 대기. 파일 누락 시 False."""
+        if request is None:
+            return False
+        await asyncio.to_thread(request.finished.wait)
+        return not request.cancelled.is_set()
+
+    async def wait_until_idle(self):
+        """재생 중이거나 대기 중인 음원이 모두 끝날 때까지 대기."""
+        while self.is_playing() or not self._queue.empty():
+            await asyncio.sleep(0.05)
+
+    def stop(self, *, clear_queue: bool = False):
+        """현재 재생을 중단하고 필요하면 대기 요청도 취소."""
+        with self._state_lock:
+            current = self._current
+            if current is not None:
+                current.cancelled.set()
+            pygame.mixer.music.stop()
+        if clear_queue:
+            self.clear_queue()
+
+    def clear_queue(self):
+        """대기 중인 모든 음원 요청을 취소."""
+        while True:
+            try:
+                request = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            request.cancelled.set()
+            request.finished.set()
+            self._queue.task_done()
 
     def is_playing(self) -> bool:
-        """현재 오디오 재생 중인지 여부"""
-        return pygame.mixer.music.get_busy()
+        """현재 재생 중인 요청이 있는지 여부."""
+        with self._state_lock:
+            return self._current is not None and not self._current.finished.is_set()
 
     def _worker(self):
-        """Audio Thread 메인 루프"""
+        """Audio Thread 메인 루프."""
         while self._running:
             try:
-                filepath, interrupt = self._queue.get(timeout=0.5)
+                request = self._queue.get(timeout=0.5)
             except queue.Empty:
                 continue
 
-            log("audio_play_start")
-
-            if interrupt:
-                with self._lock:
-                    pygame.mixer.music.stop()
-                    self._play_file(filepath)
-            else:
-                acquired = self._lock.acquire(timeout=0.1)
-                if not acquired:
-                    print("[AUDIO] Lock 획득 실패, 스킵")
+            try:
+                if request.cancelled.is_set():
                     continue
-                try:
-                    self._play_file(filepath)
-                finally:
-                    self._lock.release()
+                with self._state_lock:
+                    self._current = request
+                self._play_file(request)
+            finally:
+                request.finished.set()
+                with self._state_lock:
+                    if self._current is request:
+                        self._current = None
+                self._queue.task_done()
 
-            log("audio_play_end")
-
-    def _play_file(self, filepath: str):
-        """실제 재생 (Audio Thread 내부에서만 호출)"""
+    @staticmethod
+    def _play_file(request: PlaybackRequest):
+        """실제 재생. Audio Thread 내부에서만 호출."""
         try:
-            pygame.mixer.music.load(filepath)
+            log("audio_play_start")
+            pygame.mixer.music.load(request.filepath)
             pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                pygame.time.Clock().tick(10)
+            request.started.set()
+            while pygame.mixer.music.get_busy() and not request.cancelled.is_set():
+                pygame.time.Clock().tick(20)
+            log("audio_play_end")
         except Exception as e:
-            print(f"[AUDIO ERROR] {filepath}: {e}")
+            print(f"[AUDIO ERROR] {request.filepath}: {e}")
 
 
-# 싱글톤
 _instance: AudioManager | None = None
 
 
 def get_audio_manager() -> AudioManager:
-    """싱글톤 AudioManager 인스턴스 반환"""
+    """싱글톤 AudioManager 인스턴스 반환."""
     global _instance
     if _instance is None:
         _instance = AudioManager()

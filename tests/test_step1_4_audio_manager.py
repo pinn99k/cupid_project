@@ -6,7 +6,6 @@ Step 1-4 테스트: AudioManager (스레드 분리 + Lock)
 
 import sys
 import os
-import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -36,10 +35,10 @@ def test_audio_manager():
     assert mgr1._thread.daemon is True, "Audio Thread는 daemon이어야 함"
     print("[PASS] Case 3: Audio Thread alive + daemon")
 
-    # --- Case 4: Lock 존재 + 타입 ---
-    print("\n[4] Lock 확인...")
-    assert isinstance(mgr1._lock, type(threading.Lock())), "threading.Lock 타입이어야 함"
-    print("[PASS] Case 4: Lock 정상")
+    # --- Case 4: 우선순위 큐 존재 ---
+    print("\n[4] 우선순위 큐 확인...")
+    assert hasattr(mgr1, "_queue"), "오디오 대기 큐가 있어야 함"
+    print("[PASS] Case 4: 우선순위 큐 정상")
 
     # --- Case 5: play() - 존재하지 않는 파일 → 에러 없이 스킵 ---
     print("\n[5] play() 없는 파일 스킵...")

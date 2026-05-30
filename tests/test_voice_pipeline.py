@@ -103,19 +103,19 @@ class TestChatHistory:
         assert pipeline.chat_history == []
 
     def test_history_max_limit(self, pipeline):
-        # _max_history = 20, set 22 items manually
+        # _max_history = 8, set 10 items manually
         pipeline._chat_history = [
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg{i}"}
-            for i in range(22)
+            for i in range(10)
         ]
         # Simulate the trimming logic from _run_one_turn
         if len(pipeline._chat_history) > pipeline._max_history:
             pipeline._chat_history = pipeline._chat_history[-pipeline._max_history:]
 
-        assert len(pipeline._chat_history) == 20
-        # Oldest messages (index 0, 1) should be removed; last 20 remain
+        assert len(pipeline._chat_history) == 8
+        # Oldest messages (index 0, 1) should be removed; last 8 remain
         assert pipeline._chat_history[0]["content"] == "msg2"
-        assert pipeline._chat_history[-1]["content"] == "msg21"
+        assert pipeline._chat_history[-1]["content"] == "msg9"
 
     def test_chat_history_property_is_copy(self, pipeline):
         pipeline._chat_history = [{"role": "user", "content": "test"}]
@@ -155,7 +155,7 @@ class TestRunOneTurn:
             broadcast_calls.append(msg["type"])
 
         mock_am = MagicMock()
-        mock_am.is_playing.return_value = False
+        mock_am.wait = AsyncMock(return_value=True)
         mock_tts_cache = MagicMock()
         mock_tts_cache.get_or_create = AsyncMock(return_value="/tmp/fake.mp3")
 
@@ -247,7 +247,7 @@ class TestRunOneTurn:
         vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)
 
         mock_am = MagicMock()
-        mock_am.is_playing.return_value = False
+        mock_am.wait = AsyncMock(return_value=True)
         mock_tts_cache = MagicMock()
         mock_tts_cache.get_or_create = AsyncMock(return_value=None)
 

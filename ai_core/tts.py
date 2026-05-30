@@ -32,6 +32,16 @@ def _write_wav(filepath, pcm, channels=1, rate=24000, sample_width=2):
         wf.setframerate(rate)
         wf.writeframes(pcm)
 
+
+def generate_wav(text: str, filepath: str | Path) -> bool:
+    """Gemini TTS로 고정 안내 WAV 파일을 생성."""
+    pcm = TTSCache()._gemini_tts(text)
+    if pcm is None:
+        return False
+    _write_wav(filepath, pcm)
+    return True
+
+
 class TTSCache:
     """세션 기반 TTS 캐시. 대시보드 [새 세션] 버튼으로 초기화"""
 
@@ -64,7 +74,7 @@ class TTSCache:
         """Gemini로 음성 생성, 날것 소리 데이터(pcm bytes) 반환 / 실패 시 None
         500 INTERNAL 같은 일시적 에러는 자동 재시도
         """
-        prompt = f"어린아이에게 다정하게 말하는 친절한 언니처럼 말해줘. 목소리는 밝고 따뜻하고 살짝 들뜬 느낌으로, 천천히 또박또박 말해줘. 아이를 안심시키고 격려하는 느낌이어야 해. 한국어 발음을 정확하게 살려서 또박또박 발음해줘. 특히 받침과 어미를 분명하게 발음해야 해.: {text}"
+        prompt = f"어린아이에게 다정하게 말하는 친절한 언니처럼 말해줘. 목소리는 밝고 따뜻하고 살짝 들뜬 느낌으로, 자연스럽고 경쾌한 속도로 말해줘. 아이를 안심시키고 격려하는 느낌이어야 해. 한국어 발음을 정확하게 살려서 또박또박 발음해줘. 특히 받침과 어미를 분명하게 발음해야 해.: {text}"
 
         for attempt in range(max_retries + 1):
             try:

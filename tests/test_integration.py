@@ -60,7 +60,7 @@ class TestTurnSerialization:
             mock_tts_inst.get_or_create = AsyncMock(return_value="/tmp/test.mp3")
             mock_tts.return_value = mock_tts_inst
             mock_am_inst = MagicMock()
-            mock_am_inst.is_playing = MagicMock(side_effect=[True, False])
+            mock_am_inst.wait = AsyncMock(return_value=True)
             mock_am.return_value = mock_am_inst
 
             await pipeline._run_one_turn()

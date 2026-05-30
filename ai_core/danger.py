@@ -42,7 +42,7 @@ def judge(enriched_data, current_stage: int):
             "object": target,
             "direction": "center",
             "distance_cm": uc,
-            "audio_file": "warn_emergency.mp3",
+            "audio_file": "warn_emergency.wav",
         }
 
     # Rule 2: 위험 라벨 중 'near'인 것들만 후보로
@@ -58,7 +58,7 @@ def judge(enriched_data, current_stage: int):
 
     # 구체적 경고 음성이 있는 라벨만 따로, 나머지는 범용
     label = most_dangerous["label"]
-    audio_file = "warn_person.mp3" if label == "person" else "warn_object.mp3"
+    audio_file = "warn_person.wav" if label == "person" else "warn_object.wav"
 
     return {
         "level": "warning",

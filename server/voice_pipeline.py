@@ -5,6 +5,7 @@ STT → LLM → TTS 직렬 실행. 한 턴이 끝나야 다음 턴 시작.
 """
 import asyncio
 import time
+from ai_core.audio_manager import PRIORITY_CONVERSATION, PRIORITY_FALLBACK
 from server.mic import MicCapture
 from server.stt import STTClient
 from server.websocket_handler import broadcast
@@ -17,7 +18,14 @@ class VoicePipeline:
     어느 시점이든 STT/LLM/TTS 중 하나만 활성.
     """
 
-    def __init__(self, mic: MicCapture, stt: STTClient, tts_lock: asyncio.Lock):
+    def __init__(
+        self,
+        mic: MicCapture,
+        stt: STTClient,
+        tts_lock: asyncio.Lock,
+        cancel_narration=None,
+        audio_manager=None,
+    ):
         """
         Args:
             mic: MicCapture 인스턴스
@@ -27,9 +35,11 @@ class VoicePipeline:
         self._mic = mic
         self._stt = stt
         self._tts_lock = tts_lock
+        self._cancel_narration = cancel_narration or (lambda: None)
+        self._audio_manager = audio_manager
         self._running = False
         self._chat_history: list[dict] = []  # {"role": "user"|"assistant", "content": str}
-        self._max_history = 20  # 10턴 = 20 메시지
+        self._max_history = 8  # 최근 4턴만 유지해 LLM 응답 지연 최소화
         self._consecutive_fails = 0
         self._cooldown_steps = [2, 5, 10, 30]  # 초 단위 쿨다운 단계
 
@@ -52,15 +62,21 @@ class VoicePipeline:
     async def _run_one_turn(self):
         """한 턴 실행: listen → transcribe → think → speak"""
 
+        if self._audio_manager:
+            await self._audio_manager.wait_until_idle()
+
         # 1. 듣기 — broadcast "voice_listening"
         await broadcast({"type": "voice_listening", "timestamp": int(time.time() * 1000)})
         audio_data = await self._mic.listen()
         if audio_data is None:
             return  # 발화 없음 → 다시 듣기
+        self._cancel_narration()
 
         # 2. STT — broadcast "voice_processing"
         await broadcast({"type": "voice_processing", "timestamp": int(time.time() * 1000)})
+        stt_started = time.perf_counter()
         text = await self._stt.transcribe(audio_data)
+        print(f"[VoicePipeline] STT 완료: {time.perf_counter() - stt_started:.2f}초")
         if not text or not text.strip():
             return  # 인식 불가 → 다시 듣기
 
@@ -80,7 +96,9 @@ class VoicePipeline:
         # 히스토리를 system prompt에 포함
         context = self._build_context(SYSTEM_PROMPT)
         try:
+            llm_started = time.perf_counter()
             response = await call_async(context, text)
+            print(f"[VoicePipeline] LLM 완료: {time.perf_counter() - llm_started:.2f}초")
         except Exception as e:
             print(f"[VoicePipeline] LLM 에러: {e}")
             await self._play_fallback(f"LLM 에러: {type(e).__name__}")
@@ -121,18 +139,19 @@ class VoicePipeline:
             from ai_core.audio_manager import get_audio_manager
 
             tts = get_tts_cache()
+            tts_started = time.perf_counter()
             filepath = await tts.get_or_create(text)
+            print(f"[VoicePipeline] TTS 준비 완료: {time.perf_counter() - tts_started:.2f}초")
 
             await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
 
             if filepath:
-                am = get_audio_manager()
-                am.play_path(str(filepath))
-                while await asyncio.to_thread(am.is_playing):
-                    if not self._running:
-                        am.stop()
-                        break
-                    await asyncio.sleep(0.2)
+                am = self._audio_manager or get_audio_manager()
+                request = am.play_path(
+                    str(filepath),
+                    priority=PRIORITY_CONVERSATION,
+                )
+                await am.wait(request)
 
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
         except Exception as e:
@@ -163,13 +182,9 @@ class VoicePipeline:
             # Fallback 오디오 재생
             async with self._tts_lock:
                 await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
-                am = get_audio_manager()
-                am.play("buffer_01.mp3")
-                while await asyncio.to_thread(am.is_playing):
-                    if not self._running:
-                        am.stop()
-                        break
-                    await asyncio.sleep(0.2)
+                am = self._audio_manager or get_audio_manager()
+                request = am.play("buffer_01.wav", priority=PRIORITY_FALLBACK)
+                await am.wait(request)
                 await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
         except Exception as e:
             print(f"[VoicePipeline] Fallback 재생 오류: {e}")

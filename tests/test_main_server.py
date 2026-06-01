@@ -17,6 +17,9 @@ from server.main_server import (
     _latest_frame,
     _frame_lock,
     get_state,
+    set_scene,
+    get_scene,
+    increment_question_count,
     reset_session,
     handle_dashboard_message,
 )
@@ -32,6 +35,7 @@ class TestAppState:
         assert state.current_stage == 1
         assert state.learning_active is False
         assert state.session_id == ""
+        assert state.question_count == 0
 
     def test_to_dict(self):
         state = AppState(current_stage=2, learning_active=True, session_id="s1")
@@ -40,6 +44,7 @@ class TestAppState:
             "current_stage": 2,
             "learning_active": True,
             "session_id": "s1",
+            "question_count": 0,
         }
 
     def test_mutation(self):
@@ -72,6 +77,71 @@ class TestGetState:
             assert state["stage"] == 3
         finally:
             app_state.current_stage = original_stage
+
+
+# ---------------------------------------------------------------------------
+# 최신 장면 슬롯 테스트 (Unit 3)
+# ---------------------------------------------------------------------------
+
+class TestSceneSlot:
+    def setup_method(self):
+        import server.main_server as mod
+        with mod._scene_lock:
+            mod._latest_scene = None
+            mod._latest_scene_ts = 0.0
+
+    def test_get_scene_none_initially(self):
+        scene, ts = get_scene()
+        assert scene is None
+        assert ts == 0.0
+
+    def test_set_then_get_returns_copy(self):
+        enriched = {"objects": [{"label": "person", "direction": "center"}]}
+        set_scene(enriched)
+        scene, ts = get_scene()
+        assert scene == enriched
+        assert ts > 0.0
+        # 반환본을 변형해도 슬롯 원본은 불변 (copy 반환)
+        scene["objects"][0]["label"] = "X"
+        scene2, _ = get_scene()
+        assert scene2["objects"][0]["label"] == "person"
+
+    def test_set_scene_isolates_from_source(self):
+        enriched = {"objects": [{"label": "car"}]}
+        set_scene(enriched)
+        enriched["objects"][0]["label"] = "mutated"  # 원본 변형
+        scene, _ = get_scene()
+        assert scene["objects"][0]["label"] == "car"  # 슬롯은 독립
+
+    def test_set_scene_none(self):
+        set_scene({"objects": []})
+        set_scene(None)
+        scene, ts = get_scene()
+        assert scene is None
+
+
+# ---------------------------------------------------------------------------
+# question_count 테스트 (Unit 3)
+# ---------------------------------------------------------------------------
+
+class TestQuestionCount:
+    def setup_method(self):
+        app_state.question_count = 0
+
+    def test_increment_returns_new_value(self):
+        assert increment_question_count() == 1
+        assert increment_question_count() == 2
+        assert app_state.question_count == 2
+
+    def test_get_state_reflects_count(self):
+        increment_question_count()
+        assert get_state()["question_count"] == 1
+
+    def test_reset_session_zeroes_count(self):
+        increment_question_count()
+        increment_question_count()
+        reset_session()
+        assert app_state.question_count == 0
 
 
 # ---------------------------------------------------------------------------

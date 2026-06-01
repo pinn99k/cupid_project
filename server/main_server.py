@@ -6,6 +6,7 @@ FastAPI + WebSocket 엔트리.
 - 세션 초기화 시 오디오/TTS/상태 일괄 리셋
 """
 
+import copy
 import time
 import threading
 import asyncio as _asyncio
@@ -51,6 +52,32 @@ def _encode_frame():
 
 
 # ---------------------------------------------------------------------------
+# 최신 장면 슬롯 (Unit 3) — _ai_loop이 만든 enriched를 저장, 음성 VQA가 읽음
+# 규칙: 최신 1개 슬롯 + 락 + copy 반환 (_latest_frame과 동형, shared_resources.md §1)
+# YOLO 재실행 금지 — scene_provider는 이 슬롯을 읽기만 한다.
+# ---------------------------------------------------------------------------
+_latest_scene = None          # enriched dict
+_latest_scene_ts = 0.0        # 갱신 시각(ms)
+_scene_lock = threading.Lock()
+
+
+def set_scene(enriched: dict):
+    """_ai_loop에서 호출 — 최신 장면 저장 (스레드 안전, 단일 writer)."""
+    global _latest_scene, _latest_scene_ts
+    with _scene_lock:
+        _latest_scene = copy.deepcopy(enriched) if enriched is not None else None
+        _latest_scene_ts = time.time() * 1000
+
+
+def get_scene() -> tuple[dict | None, float]:
+    """음성 VQA용 — (최신 장면 복사본, 갱신시각ms) 반환. 없으면 (None, 0.0)."""
+    with _scene_lock:
+        if _latest_scene is None:
+            return None, 0.0
+        return copy.deepcopy(_latest_scene), _latest_scene_ts
+
+
+# ---------------------------------------------------------------------------
 # 서버 상태 관리
 # ---------------------------------------------------------------------------
 @dataclass
@@ -58,6 +85,7 @@ class AppState:
     current_stage: int = 1
     learning_active: bool = False
     session_id: str = ""
+    question_count: int = 0  # "시아야" 질문-답변 성공 횟수 (voice task만 증가 = 단일 writer)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -82,7 +110,14 @@ def get_state() -> dict:
         "stage": app_state.current_stage,
         "learning_active": app_state.learning_active,
         "session_id": app_state.session_id,
+        "question_count": app_state.question_count,
     }
+
+
+def increment_question_count() -> int:
+    """질문-답변 성공 시 호출 (voice task 단일 writer). 갱신된 값 반환."""
+    app_state.question_count += 1
+    return app_state.question_count
 
 
 def set_voice_pipeline(pipeline):
@@ -105,6 +140,7 @@ def reset_session():
     stop_learning, new_session 양쪽에서 호출."""
     app_state.learning_active = False
     app_state.current_stage = 1
+    app_state.question_count = 0
     _cancel_narration()
 
     # Voice pipeline 히스토리 리셋

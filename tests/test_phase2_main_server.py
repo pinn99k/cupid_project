@@ -31,12 +31,12 @@ def test_app_state_dataclass():
 
     # Case 2: to_dict
     d = state.to_dict()
-    assert d == {"current_stage": 1, "learning_active": False, "session_id": ""}
+    assert d == {"current_stage": 1, "learning_active": False, "session_id": "", "question_count": 0}
     print(f"[PASS] Case 2: to_dict → {d}")
 
     # Case 3: 커스텀 값
     state2 = AppState(current_stage=3, learning_active=True, session_id="s1")
-    assert state2.to_dict() == {"current_stage": 3, "learning_active": True, "session_id": "s1"}
+    assert state2.to_dict() == {"current_stage": 3, "learning_active": True, "session_id": "s1", "question_count": 0}
     print("[PASS] Case 3: 커스텀 AppState 정상")
 
     print()

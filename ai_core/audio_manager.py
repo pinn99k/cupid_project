@@ -17,6 +17,24 @@ from utils.latency_logger import log
 
 FALLBACK_DIR = Path("audio/fallback")
 
+# 코드는 ".wav"로 음원을 부르지만 사전생성본이 ".mp3"일 수 있다.
+# pygame.mixer.music는 둘 다 재생하므로, 요청 확장자가 없으면 대체 확장자를 찾는다.
+_AUDIO_EXTS = (".wav", ".mp3", ".ogg")
+
+
+def _resolve_fallback(filename: str) -> str:
+    """fallback 디렉토리에서 음원 경로 해석. 요청 확장자가 없으면 동일 stem의
+    다른 확장자(.wav/.mp3/.ogg)를 찾는다. 못 찾으면 요청 경로 그대로 반환."""
+    requested = FALLBACK_DIR / filename
+    if requested.exists():
+        return str(requested)
+    for ext in _AUDIO_EXTS:
+        alt = FALLBACK_DIR / (requested.stem + ext)
+        if alt.exists():
+            return str(alt)
+    return str(requested)
+
+
 PRIORITY_DANGER = 0
 PRIORITY_CONVERSATION = 10
 PRIORITY_NARRATION = 20
@@ -57,7 +75,7 @@ class AudioManager:
     ) -> PlaybackRequest | None:
         """fallback 디렉토리의 음원 재생 요청."""
         return self.play_path(
-            str(FALLBACK_DIR / filename),
+            _resolve_fallback(filename),
             priority=priority,
             interrupt=interrupt,
         )

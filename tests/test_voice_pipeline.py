@@ -23,7 +23,8 @@ def mock_mic():
 @pytest.fixture
 def mock_stt():
     stt = MagicMock()
-    stt.transcribe = AsyncMock(return_value="안녕하세요")
+    # 호출어 게이팅(Unit 2) 통과용 — 처리되면 query는 "안녕하세요"로 추출됨
+    stt.transcribe = AsyncMock(return_value="시아야 안녕하세요")
     return stt
 
 
@@ -223,21 +224,25 @@ class TestRunOneTurn:
             mock_llm.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_llm_failure_skips_tts(self, mock_mic, mock_stt, tts_lock):
-        """call_async가 None 반환 → TTS 호출 없음, tts_start/tts_done 없음."""
-        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)
-        broadcast_calls = []
+    async def test_llm_failure_skips_response_tts(self, mock_mic, mock_stt, tts_lock):
+        """call_async가 None 반환 → 응답 TTS 생성 없음, 히스토리 저장 없음.
+        (LLM 실패 시엔 폴백 음성을 재생하므로 tts_start/done 자체는 발생할 수 있음)"""
+        mock_am = MagicMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        mock_am.wait_until_idle = AsyncMock()
+        mock_tts_cache = MagicMock()
+        mock_tts_cache.get_or_create = AsyncMock(return_value=None)
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock, audio_manager=mock_am)
+        vp._cooldown_steps = [0]  # 쿨다운 sleep 제거(테스트 속도)
 
-        async def capture_broadcast(msg):
-            broadcast_calls.append(msg["type"])
-
-        with patch(BROADCAST_PATH, side_effect=capture_broadcast), \
+        with patch(BROADCAST_PATH, new=AsyncMock()), \
              patch("ai_core.llm_client.call_async", new=AsyncMock(return_value=None)), \
-             patch("ai_core.llm_client.SYSTEM_PROMPT", "프롬프트"):
+             patch("ai_core.tts.get_tts_cache", return_value=mock_tts_cache), \
+             patch("ai_core.audio_manager.get_audio_manager", return_value=mock_am):
             await vp._run_one_turn()
 
-        assert "tts_start" not in broadcast_calls
-        assert "tts_done" not in broadcast_calls
+        # 응답 자체는 TTS로 만들어지지 않음
+        mock_tts_cache.get_or_create.assert_not_called()
         # 히스토리도 저장되지 않아야 함
         assert vp.chat_history == []
 
@@ -261,3 +266,96 @@ class TestRunOneTurn:
         assert len(vp.chat_history) == 2
         assert vp.chat_history[0] == {"role": "user", "content": "안녕하세요"}
         assert vp.chat_history[1] == {"role": "assistant", "content": "응답"}
+
+
+# ---------------------------------------------------------------------------
+# TestVQA (Unit 3b) — scene_provider / 신선도 / question_count
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+
+class TestVQA:
+    def _mocks(self):
+        mock_am = MagicMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        mock_tts_cache = MagicMock()
+        mock_tts_cache.get_or_create = AsyncMock(return_value=None)
+        return mock_am, mock_tts_cache
+
+    @pytest.mark.asyncio
+    async def test_fresh_scene_uses_vqa_prompt(self, mock_mic, mock_stt, tts_lock):
+        """신선한 장면이 있으면 VQA_PROMPT + 장면 텍스트로 LLM 호출."""
+        scene = {"objects": [{"label": "person", "direction": "center", "distance_est": "near"}]}
+        provider = lambda: (scene, _time.time() * 1000)  # 방금 갱신 = 신선
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock, scene_provider=provider)
+
+        captured = {}
+        async def fake_call(system_prompt, user_msg, *a, **k):
+            captured["sys"] = system_prompt
+            return "응답"
+
+        mock_am, mock_tts = self._mocks()
+        with patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch("ai_core.llm_client.call_async", new=fake_call), \
+             patch("ai_core.tts.get_tts_cache", return_value=mock_tts), \
+             patch("ai_core.audio_manager.get_audio_manager", return_value=mock_am):
+            await vp._run_one_turn()
+
+        assert "[현재 장면]" in captured["sys"]
+        assert "사람" in captured["sys"]  # scene_to_korean 결과 포함
+
+    @pytest.mark.asyncio
+    async def test_stale_scene_uses_system_prompt(self, mock_mic, mock_stt, tts_lock):
+        """장면이 오래되면(stale) VQA 대신 일반 대화 프롬프트."""
+        scene = {"objects": [{"label": "person", "direction": "center", "distance_est": "near"}]}
+        provider = lambda: (scene, _time.time() * 1000 - 9999)  # 오래됨
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock,
+                           scene_provider=provider, scene_fresh_sec=2.0)
+
+        captured = {}
+        async def fake_call(system_prompt, user_msg, *a, **k):
+            captured["sys"] = system_prompt
+            return "응답"
+
+        mock_am, mock_tts = self._mocks()
+        with patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch("ai_core.llm_client.call_async", new=fake_call), \
+             patch("ai_core.tts.get_tts_cache", return_value=mock_tts), \
+             patch("ai_core.audio_manager.get_audio_manager", return_value=mock_am):
+            await vp._run_one_turn()
+
+        assert "[현재 장면]" not in captured["sys"]
+
+    @pytest.mark.asyncio
+    async def test_count_question_called_on_success(self, mock_mic, mock_stt, tts_lock):
+        """답변 성공 시 count_question 콜백 1회 호출."""
+        counter = MagicMock()
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock, count_question=counter)
+
+        mock_am, mock_tts = self._mocks()
+        with patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch("ai_core.llm_client.call_async", new=AsyncMock(return_value="응답")), \
+             patch("ai_core.tts.get_tts_cache", return_value=mock_tts), \
+             patch("ai_core.audio_manager.get_audio_manager", return_value=mock_am):
+            await vp._run_one_turn()
+
+        counter.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_count_question_not_called_on_llm_failure(self, mock_mic, mock_stt, tts_lock):
+        """LLM 실패 시 count_question 미호출."""
+        counter = MagicMock()
+        mock_am = MagicMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        mock_am.wait_until_idle = AsyncMock()
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock,
+                           count_question=counter, audio_manager=mock_am)
+        vp._cooldown_steps = [0]
+
+        with patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch("ai_core.llm_client.call_async", new=AsyncMock(return_value=None)), \
+             patch("ai_core.audio_manager.get_audio_manager", return_value=mock_am):
+            await vp._run_one_turn()
+
+        counter.assert_not_called()

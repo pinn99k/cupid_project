@@ -42,6 +42,9 @@ OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 # YOLO / 서버 설정
 YOLO_MODEL: str = os.getenv("YOLO_MODEL", "yolov8n.pt")
 YOLO_CONF_THRESHOLD: float = float(os.getenv("YOLO_CONF_THRESHOLD", "0.4"))
+# 관련성 게이트(Unit 6): 화면 대비 면적이 이 값 미만인 객체는 무시.
+# 배경 스크린(동물의숲 등)의 작고 먼 오탐 차단. 0이면 비활성.
+RELEVANCE_MIN_AREA: float = float(os.getenv("RELEVANCE_MIN_AREA", "0.02"))
 DANGER_DISTANCE_CM: float = float(os.getenv("DANGER_DISTANCE_CM", "30"))
 SERVER_HOST: str = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8000"))

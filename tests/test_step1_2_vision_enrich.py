@@ -52,5 +52,30 @@ def test_enrich():
     print("\n[결과] Step 1-2 PASS - 방향/거리/초음파 매칭 모두 정상")
 
 
+def test_relevance_gate():
+    """Unit 6: min_relevant_area 미만의 작은/먼 객체는 제외."""
+    mock_detections = [
+        {"label": "person", "x": 10, "y": 50, "w": 180, "h": 350, "conf": 0.92},  # 면적 0.205
+        {"label": "chair", "x": 250, "y": 100, "w": 100, "h": 150, "conf": 0.87},  # 면적 0.049
+        {"label": "car", "x": 500, "y": 200, "w": 30, "h": 20, "conf": 0.65},      # 면적 0.002 (배경 오탐)
+    ]
+    frame_w, frame_h = 640, 480
+
+    # 게이트 없음 → 3개 모두
+    assert len(enrich(mock_detections, frame_w, frame_h)["objects"]) == 3
+
+    # 0.02 게이트 → 작은 car(0.002) 제외, person/chair 유지
+    gated = enrich(mock_detections, frame_w, frame_h, min_relevant_area=0.02)["objects"]
+    labels = [o["label"] for o in gated]
+    assert labels == ["person", "chair"], f"게이트 결과 오류: {labels}"
+
+    # 강한 게이트 0.1 → person만
+    strong = enrich(mock_detections, frame_w, frame_h, min_relevant_area=0.1)["objects"]
+    assert [o["label"] for o in strong] == ["person"]
+
+    print("[결과] Unit 6 관련성 게이트 PASS")
+
+
 if __name__ == "__main__":
     test_enrich()
+    test_relevance_gate()

@@ -68,14 +68,23 @@ def _get_distance(area_ratio):
     return "mid"
 
 
-def enrich(detections, frame_w, frame_h, ultrasonic_cm=None):
-    """각 물체에 방향/거리 정보를 더한 최종 JSON 반환"""
+def enrich(detections, frame_w, frame_h, ultrasonic_cm=None, min_relevant_area=0.0):
+    """각 물체에 방향/거리 정보를 더한 최종 JSON 반환.
+
+    min_relevant_area > 0이면 화면 대비 면적이 그 미만인 객체는 무시한다
+    (Unit 6 관련성 게이트 — 배경 스크린의 작고 먼 오탐 차단).
+    기본값 0 = 필터 없음(기존 동작 보존, 순수 기하 테스트용).
+    """
     objects = []
     center_objects = []
 
     for det in detections:
         center_x_ratio = (det["x"] + det["w"] / 2) / frame_w
         area_ratio = (det["w"] * det["h"]) / (frame_w * frame_h)
+
+        # 관련성 게이트: 너무 작은(먼) 객체는 분석 대상에서 제외
+        if min_relevant_area > 0 and area_ratio < min_relevant_area:
+            continue
 
         direction = _get_direction(center_x_ratio)
         distance = _get_distance(area_ratio)

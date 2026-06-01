@@ -38,9 +38,10 @@ LLM_MODEL: str = _env_value("LLM_MODEL", "llama-3.3-70b-versatile")
 # thinking 비활성화(LLM_THINKING_BUDGET=0)와 병행하여 안전 여유 확보.
 LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "1024"))
 
-# Gemini 2.5-flash thinking 토큰 예산 (0=비활성화, -1=모델 기본값)
-# thinking 토큰이 max_tokens에 포함되어 실제 응답 공간을 잠식하는 문제 방지.
-# 대화형 응답(1~2문장)은 thinking 없이도 충분히 생성 가능.
+# Gemini 2.5-flash thinking 제어 (0=비활성화, -1=모델 기본값)
+# ⚠️ Gemini OpenAI 호환 엔드포인트는 extra_body의 generationConfig를 지원 안 함.
+#    0 → reasoning_effort='none' (thinking 완전 비활성화, 문장 잘림 방지)
+#   -1 → reasoning_effort 파라미터 생략 (모델 기본값)
 LLM_THINKING_BUDGET: int = int(os.getenv("LLM_THINKING_BUDGET", "0"))
 # 0.4 → 0.7: 더 자연스럽고 따뜻한 말투를 위해 온도 상향.
 LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))

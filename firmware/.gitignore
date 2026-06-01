@@ -1,0 +1,13 @@
+# 실제 WiFi 자격증명 (커밋 금지)
+sia_camera/sia_secrets.h
+
+# 아두이노/네이티브 빌드 산출물
+build/
+*.bin
+*.elf
+*.o
+*.obj
+*.exe
+tests/native/a.out
+tests/native/test_sia_distance
+tests/native/*.exe

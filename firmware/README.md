@@ -6,8 +6,17 @@
 ## 디렉토리
 ```
 firmware/
-  sia_camera/sia_camera.ino   ← 펌웨어 본체 (작성 예정)
-  README.md                   ← 이 문서
+  PLAN.md                       ← 작성 계획·설계 근거
+  README.md                     ← 이 문서 (규격·배선·브링업)
+  sia_camera/
+    sia_camera.ino              ← 펌웨어 본체
+    sia_config.h                ← 핀·포트·주기 상수
+    sia_distance.h              ← 순수 변환 로직(네이티브 테스트 대상)
+    sia_secrets.example.h       ← WiFi 자격증명 템플릿 (→ sia_secrets.h 로 복사)
+  tests/
+    native/test_sia_distance.cpp  ← 칩 없이 g++ 단위테스트
+    test_contract.py              ← /distance·/stream 계약(mock/실칩)
+    bringup_checklist.md          ← 실칩 수동 5단계
 ```
 
 ## 굽는 규격 (아두이노 IDE)
@@ -30,10 +39,19 @@ firmware/
 > SD카드 사용 시 GPIO12~15 점유됨 → 미사용 전제. 핀은 단계2 테스트로 검증.
 
 ## 엔드포인트 계약 (서버와 합의)
-| 라우트 | 응답 |
-|--------|------|
-| `GET /stream` | MJPEG (multipart/x-mixed-replace) |
-| `GET /distance` | `{"cm": <날것값>, "ts": <ms>}` — **보정 안 함** |
+> **2포트 분리**: 스트림(:81)이 장기 연결돼도 /distance(:80)가 안 끊김. (PLAN.md §2)
+
+| 포트 | 라우트 | 응답 |
+|------|--------|------|
+| :81 | `GET /stream` | MJPEG (multipart/x-mixed-replace;boundary=frame) |
+| :80 | `GET /distance` | `{"cm": <날것값>, "ts": <ms>}` — **보정 안 함**. 무반사 시 `cm=-1.0` |
+| :80 | `GET /health` | `{"ok": true, ...}` — 브링업 점검용(서버 미사용) |
+
+서버 `.env` 매핑:
+```
+CAM_SOURCE=http://<device-ip>:81/stream
+ULTRASONIC_URL=http://<device-ip>:80/distance
+```
 
 ## 단계별 브링업 (실칩 수동 테스트)
 0. Blink+시리얼 hello → 보드/플래싱 확인

@@ -32,7 +32,8 @@ from server.main_server import (
 from server.websocket_handler import broadcast
 from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX,
                            MIC_DEVICE_INDEX, VAD_SILENCE_THRESHOLD,
-                           VAD_SILENCE_DURATION, VAD_MAX_DURATION, STT_LANGUAGE)
+                           VAD_SILENCE_DURATION, VAD_MAX_DURATION, STT_LANGUAGE,
+                           RELEVANCE_MIN_AREA)
 from server.mic import MicCapture
 from server.stt import STTClient
 from server.voice_pipeline import VoicePipeline
@@ -169,7 +170,7 @@ async def _ai_loop():
         h, w = frame.shape[:2]
         log("detect_start")
         dets = await asyncio.to_thread(detect, frame)
-        enriched = enrich(dets, w, h)
+        enriched = enrich(dets, w, h, min_relevant_area=RELEVANCE_MIN_AREA)
         log("detect_end")
 
         # 최신 장면을 공유 슬롯에 저장 — "시아야 질문" 시 VQA가 읽음 (Unit 3)

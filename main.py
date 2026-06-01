@@ -26,6 +26,7 @@ from server.main_server import (
     get_frame,
     set_cancel_narration,
     set_frame,
+    set_scene,
     set_voice_pipeline,
 )
 from server.websocket_handler import broadcast
@@ -148,10 +149,7 @@ async def _ai_loop():
     import server.main_server as srv
 
     audio = get_audio_manager()
-    tts = get_tts_cache()
 
-    last_narration_time = 0.0
-    last_narration_fingerprint = None
     last_danger_time = 0.0
     last_danger_obj = None
     last_detection_broadcast_time = 0.0
@@ -173,6 +171,10 @@ async def _ai_loop():
         dets = await asyncio.to_thread(detect, frame)
         enriched = enrich(dets, w, h)
         log("detect_end")
+
+        # 최신 장면을 공유 슬롯에 저장 — "시아야 질문" 시 VQA가 읽음 (Unit 3)
+        # YOLO를 음성 경로에서 또 돌리지 않기 위함 (shared_resources.md §6)
+        set_scene(enriched)
 
         now = time.time()
 
@@ -234,25 +236,10 @@ async def _ai_loop():
             await asyncio.sleep(0.5)
             continue
 
-        # 공간 묘사 (장면 변경 + 시간 경과 + 미실행 상태일 때만 실행)
-        if srv.app_state.learning_active and len(enriched["objects"]) > 0:
-            fingerprint = tuple(sorted(
-                (obj["label"], obj["direction"])
-                for obj in enriched["objects"]
-            ))
-            same_scene = (fingerprint == last_narration_fingerprint)
-            if (
-                not same_scene
-                and not _narration_in_progress
-                and (now - last_narration_time) >= NARRATION_INTERVAL
-            ):
-                last_narration_fingerprint = fingerprint
-                last_narration_time = now
-                global _narration_task
-                _narration_task = asyncio.create_task(
-                    _handle_narration(enriched, tts, audio, srv.app_state.current_stage)
-                )
-                _narration_task.add_done_callback(_task_done_callback)
+        # 자동 공간 묘사(narration)는 Unit 3에서 제거 — 자동 묘사가 대화와 TTS락·
+        # quota를 두고 경합해 응답이 밀리던 문제 해소. 최신 장면은 set_scene으로
+        # 슬롯에 저장되어 "시아야 질문" 시 VQA가 근거로 사용한다.
+        # (_handle_narration/_run_narration 함수는 수동 호출용으로 보존)
 
         await asyncio.sleep(0.1)  # AI 루프는 ~10fps면 충분
 

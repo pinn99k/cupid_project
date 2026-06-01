@@ -51,6 +51,9 @@ class VoicePipeline:
         while self._running:
             try:
                 await self._run_one_turn()
+                # 빈 턴(발화 없음/인식 불가 등)이 I/O 대기 없이 즉시 끝나도
+                # 이벤트 루프에 제어를 양보 — CPU 스핀 및 다른 태스크 굶김 방지.
+                await asyncio.sleep(0)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -83,7 +86,21 @@ class VoicePipeline:
         text = text.strip()
         print(f"[VoicePipeline] STT 결과: {text}")
 
-        # 사용자 발화를 대시보드에 표시
+        # 2-1. 호출어 게이팅 (결정 A2/A3)
+        #  - 호출어 "시아야" 없음 → 무시 (대시보드 broadcast도 안 함 = 잡음/에코 차단)
+        #  - 있음 → 호출어 뒤 질문만 추출. 질문이 비면("시아야"만) 무시.
+        from server.wake_word import parse_wake_word
+        query = parse_wake_word(text)
+        if not query:  # None(비호출) 또는 ""(호출만, 질문 없음)
+            print(f"[VoicePipeline] 호출어 없음 → 무시: {text!r}")
+            return
+        text = query
+
+        # 2-2. 즉시 "잠깐만" 필러 — LLM 대기 동안 무응답 침묵 방지 (비대기)
+        if self._audio_manager:
+            self._audio_manager.play("buffer_01.wav", priority=PRIORITY_FALLBACK)
+
+        # 사용자 질문을 대시보드에 표시 (호출어 제거된 질문)
         await broadcast({
             "type": "user_stt",
             "message": text,

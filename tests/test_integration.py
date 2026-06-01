@@ -27,7 +27,8 @@ def mock_mic():
 @pytest.fixture
 def mock_stt():
     stt = MagicMock()
-    stt.transcribe = AsyncMock(return_value="안녕하세요 시아")
+    # 호출어 게이팅(Unit 2) 후: 턴이 진행되려면 "시아야" 포함 필요
+    stt.transcribe = AsyncMock(return_value="시아야 안녕하세요")
     return stt
 
 

@@ -33,6 +33,8 @@ def _env_value(key: str, default: str) -> str:
 # LLM_PROVIDER: groq | gemini | openai
 LLM_PROVIDER: str = _env_value("LLM_PROVIDER", "groq")
 LLM_MODEL: str = _env_value("LLM_MODEL", "llama-3.3-70b-versatile")
+LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "70"))
+LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.4"))
 
 # API 키 (사용하는 공급자 키만 있으면 됨)
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
@@ -41,10 +43,12 @@ OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 
 # YOLO / 서버 설정
 YOLO_MODEL: str = os.getenv("YOLO_MODEL", "yolov8n.pt")
-YOLO_CONF_THRESHOLD: float = float(os.getenv("YOLO_CONF_THRESHOLD", "0.4"))
+YOLO_CONF_THRESHOLD: float = float(os.getenv("YOLO_CONF_THRESHOLD", "0.35"))
 # 관련성 게이트(Unit 6): 화면 대비 면적이 이 값 미만인 객체는 무시.
 # 배경 스크린(동물의숲 등)의 작고 먼 오탐 차단. 0이면 비활성.
-RELEVANCE_MIN_AREA: float = float(os.getenv("RELEVANCE_MIN_AREA", "0.02"))
+RELEVANCE_MIN_AREA: float = float(os.getenv("RELEVANCE_MIN_AREA", "0.01"))
+DETECTION_BROADCAST_INTERVAL: float = float(os.getenv("DETECTION_BROADCAST_INTERVAL", "0.1"))
+AI_LOOP_SLEEP_SEC: float = float(os.getenv("AI_LOOP_SLEEP_SEC", "0.03"))
 DANGER_DISTANCE_CM: float = float(os.getenv("DANGER_DISTANCE_CM", "30"))
 SERVER_HOST: str = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8000"))
@@ -78,13 +82,13 @@ if MIC_DEVICE_INDEX is not None:
     MIC_DEVICE_INDEX = int(MIC_DEVICE_INDEX)
 
 # VAD 설정
-VAD_SILENCE_THRESHOLD: int = int(os.getenv("VAD_SILENCE_THRESHOLD", "500"))
-# 0.8s: 말끝이 잘리던 문제 완화(Unit 5). 짧으면 발화 중간 침묵에 조기 종료됨.
-VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "0.8"))
+VAD_SILENCE_THRESHOLD: int = int(os.getenv("VAD_SILENCE_THRESHOLD", "450"))
+# 0.5s: 응답 대기 시간을 줄이기 위한 기본값. 짧으면 발화 중간 침묵에 조기 종료됨.
+VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "0.5"))
 VAD_MAX_DURATION: float = float(os.getenv("VAD_MAX_DURATION", "10"))
 # 저음량 되묻기(Unit 4): 발화 평균 RMS가 이 값 미만이면 "더 크게 말해줄래?".
-# silence_threshold(500)보다 높게 — 들리긴 하나 STT엔 너무 작은 구간. 0이면 비활성.
-VAD_LOW_VOLUME_RMS: float = float(os.getenv("VAD_LOW_VOLUME_RMS", "800"))
+# silence_threshold보다 높게 — 들리긴 하나 STT엔 너무 작은 구간. 0이면 비활성.
+VAD_LOW_VOLUME_RMS: float = float(os.getenv("VAD_LOW_VOLUME_RMS", "650"))
 
 # STT 설정
 STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "ko-KR")

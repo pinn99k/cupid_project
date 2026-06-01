@@ -7,7 +7,7 @@ LLM API 호출 (비블로킹, asyncio.to_thread 사용)
 import asyncio
 import re
 from openai import OpenAI
-from server.config import LLM_MODEL, GEMINI_API_KEY
+from server.config import LLM_MODEL, GEMINI_API_KEY, LLM_MAX_TOKENS, LLM_TEMPERATURE
 from utils.latency_logger import log
 
 SYSTEM_PROMPT = """너는 '시아'야. 시각장애가 있는 4~10세 아이의 보행을 도와주는, 밝고 다정한 언니 같은 AI 친구야.
@@ -71,7 +71,7 @@ def init():
         print("[LLM] 경고: GEMINI_API_KEY 미설정")
 
 
-def _call_sync(system_prompt: str, user_msg: str, max_tokens: int = 120) -> str | None:
+def _call_sync(system_prompt: str, user_msg: str, max_tokens: int = LLM_MAX_TOKENS) -> str | None:
     """동기 LLM 호출 (스레드 풀에서 실행됨)"""
     if client is None:
         print("[LLM] 클라이언트 미초기화. init() 호출 필요")
@@ -85,7 +85,7 @@ def _call_sync(system_prompt: str, user_msg: str, max_tokens: int = 120) -> str 
                 {"role": "user", "content": user_msg},
             ],
             max_tokens=max_tokens,
-            temperature=0.7,
+            temperature=LLM_TEMPERATURE,
         )
         log("llm_end")
         return _strip_emoji(response.choices[0].message.content)
@@ -96,7 +96,7 @@ def _call_sync(system_prompt: str, user_msg: str, max_tokens: int = 120) -> str 
 
 
 async def call_async(
-    system_prompt: str, user_msg: str, max_tokens: int = 120
+    system_prompt: str, user_msg: str, max_tokens: int = LLM_MAX_TOKENS
 ) -> str | None:
     """비블로킹 LLM 호출. asyncio.to_thread()로 감쌈"""
     return await asyncio.to_thread(_call_sync, system_prompt, user_msg, max_tokens)

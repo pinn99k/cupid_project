@@ -113,17 +113,15 @@ def _call_sync(system_prompt: str, user_msg: str, max_tokens: int = LLM_MAX_TOKE
     if client is None:
         print("[LLM] 클라이언트 미초기화. init() 호출 필요")
         return None
-    # Gemini 2.5-flash: thinking 토큰을 max_tokens에서 비활성화
-    # thinking이 켜져 있으면 내부 추론 토큰(~300-400)이 max_tokens 예산을 잠식해
-    # 실제 출력 공간이 15토큰 수준으로 줄어든다 → 문장 잘림 근본 원인.
-    # LLM_THINKING_BUDGET=0: 완전 비활성화 / -1: 모델 기본값 유지
+
+    # Gemini 2.5-flash: thinking 토큰 비활성화
+    # ⚠️ Gemini OpenAI 호환 엔드포인트는 extra_body의 generationConfig/thinkingConfig를
+    #    지원하지 않음 (400 "Unknown name" 에러 발생).
+    # → OpenAI SDK v2의 reasoning_effort='none' 파라미터를 사용해 thinking 비활성화.
+    # LLM_THINKING_BUDGET=0: reasoning_effort='none' / -1: 파라미터 생략(모델 기본값)
     _extra: dict = {}
-    if LLM_THINKING_BUDGET >= 0:
-        _extra["extra_body"] = {
-            "generationConfig": {
-                "thinkingConfig": {"thinkingBudget": LLM_THINKING_BUDGET}
-            }
-        }
+    if LLM_THINKING_BUDGET == 0:
+        _extra["reasoning_effort"] = "none"
 
     try:
         log("llm_start")
@@ -151,19 +149,21 @@ def _call_sync(system_prompt: str, user_msg: str, max_tokens: int = LLM_MAX_TOKE
         usage_details = getattr(usage, "completion_tokens_details", None)
         thinking_tokens = getattr(usage_details, "reasoning_tokens", None) if usage_details else None
 
+        thinking_str = f"(thinking={thinking_tokens})" if thinking_tokens else ""
+        reasoning_str = f" reasoning_effort={_extra.get('reasoning_effort', 'default')}"
         print(
-            f"[LLM] tokens: prompt={prompt_tokens}"
-            f" completion={completion_tokens}"
-            + (f"(thinking={thinking_tokens})" if thinking_tokens else "")
-            + f" max_tokens={max_tokens} finish_reason={finish_reason}"
+            f"[LLM] provider=gemini model={LLM_MODEL}{reasoning_str}"
+            f" tokens: prompt={prompt_tokens} completion={completion_tokens}{thinking_str}"
+            f" max_tokens={max_tokens} finish_reason={finish_reason}"
         )
+        print("[LLM] API call success")
 
         # finish_reason=length 상세 분석
         if finish_reason == "length":
             if thinking_tokens and thinking_tokens > max_tokens * 0.5:
                 print(
                     f"[LLM] ⚠️ thinking={thinking_tokens}토큰이 예산 소진!"
-                    f" → thinkingBudget=0 설정 필요 (현재={LLM_THINKING_BUDGET})"
+                    f" → LLM_THINKING_BUDGET=0 확인 (현재={LLM_THINKING_BUDGET})"
                 )
             elif completion_tokens is not None and completion_tokens < max_tokens * 0.5:
                 print(

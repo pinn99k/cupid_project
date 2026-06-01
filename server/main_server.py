@@ -17,6 +17,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from ai_core.audio_manager import get_audio_manager
 from server.websocket_handler import connect, receive_loop, broadcast
 from server.config import SERVER_HOST, SERVER_PORT
 
@@ -149,7 +150,6 @@ def reset_session():
 
     # 오디오 리셋
     try:
-        from ai_core.audio_manager import get_audio_manager
         am = get_audio_manager()
         am.stop(clear_queue=True)
     except Exception as e:

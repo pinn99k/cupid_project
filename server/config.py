@@ -82,13 +82,17 @@ if MIC_DEVICE_INDEX is not None:
     MIC_DEVICE_INDEX = int(MIC_DEVICE_INDEX)
 
 # VAD 설정
-VAD_SILENCE_THRESHOLD: int = int(os.getenv("VAD_SILENCE_THRESHOLD", "450"))
+VAD_SILENCE_THRESHOLD: int = int(os.getenv("VAD_SILENCE_THRESHOLD", "100"))
 # 0.5s: 응답 대기 시간을 줄이기 위한 기본값. 짧으면 발화 중간 침묵에 조기 종료됨.
-VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "0.5"))
+VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "1.8"))
 VAD_MAX_DURATION: float = float(os.getenv("VAD_MAX_DURATION", "10"))
 # 저음량 되묻기(Unit 4): 발화 평균 RMS가 이 값 미만이면 "더 크게 말해줄래?".
 # silence_threshold보다 높게 — 들리긴 하나 STT엔 너무 작은 구간. 0이면 비활성.
-VAD_LOW_VOLUME_RMS: float = float(os.getenv("VAD_LOW_VOLUME_RMS", "650"))
+VAD_LOW_VOLUME_RMS: float = float(os.getenv("VAD_LOW_VOLUME_RMS", "0"))
 
 # STT 설정
 STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "ko-KR")
+
+# 출력 음성이 마이크에 되먹임되지 않도록 재생 완료 후 잠깐 더 듣기를 멈춘다.
+VOICE_OUTPUT_SETTLE_SEC: float = float(os.getenv("VOICE_OUTPUT_SETTLE_SEC", "0.4"))
+VOICE_REPROMPT_COOLDOWN_SEC: float = float(os.getenv("VOICE_REPROMPT_COOLDOWN_SEC", "2.0"))

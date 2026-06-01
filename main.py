@@ -36,7 +36,8 @@ from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX,
                            MIC_DEVICE_INDEX, VAD_SILENCE_THRESHOLD,
                            VAD_SILENCE_DURATION, VAD_MAX_DURATION, STT_LANGUAGE,
                            RELEVANCE_MIN_AREA, VAD_LOW_VOLUME_RMS,
-                           DETECTION_BROADCAST_INTERVAL, AI_LOOP_SLEEP_SEC)
+                           DETECTION_BROADCAST_INTERVAL, AI_LOOP_SLEEP_SEC,
+                           VOICE_OUTPUT_SETTLE_SEC, VOICE_REPROMPT_COOLDOWN_SEC)
 from server.mic import MicCapture
 from server.stt import STTClient
 from server.voice_pipeline import VoicePipeline
@@ -230,7 +231,7 @@ async def _ai_loop():
                     await broadcast({"type": "tts_start"})
                     # Fallback으로 기본 경고음 재생
                     request = audio.play(
-                        "buffer_01.wav",
+                        "warn_emergency.wav",
                         priority=PRIORITY_DANGER,
                         interrupt=True,
                     )
@@ -332,6 +333,8 @@ async def startup():
     # 두 루프를 독립적으로 시작
     _frame_task = asyncio.create_task(_frame_loop())
     _ai_task = asyncio.create_task(_ai_loop())
+    _frame_task.add_done_callback(_task_done_callback)
+    _ai_task.add_done_callback(_task_done_callback)
     # VoicePipeline 초기화
     mic = MicCapture(
         device_index=MIC_DEVICE_INDEX,
@@ -349,10 +352,13 @@ async def startup():
         scene_provider=get_scene,
         count_question=increment_question_count,
         low_volume_rms=VAD_LOW_VOLUME_RMS,
+        output_settle_sec=VOICE_OUTPUT_SETTLE_SEC,
+        reprompt_cooldown_sec=VOICE_REPROMPT_COOLDOWN_SEC,
     )
     set_voice_pipeline(voice_pipeline)
     set_cancel_narration(cancel_narration)
     _voice_task = asyncio.create_task(voice_pipeline.run())
+    _voice_task.add_done_callback(_task_done_callback)
     print("[SIA] 초기화 완료. 프레임 루프 + AI 루프 + 음성 파이프라인 시작.")
 
 

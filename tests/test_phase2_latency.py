@@ -7,6 +7,11 @@ import threading
 import time
 from pathlib import Path
 
+if __name__ != "__main__":
+    import pytest
+
+    pytest.skip("standalone latency verification script", allow_module_level=True)
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.latency_logger import LatencyLogger, MeasurementStats

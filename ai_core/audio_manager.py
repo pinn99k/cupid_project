@@ -10,6 +10,8 @@ from itertools import count
 from pathlib import Path
 import queue
 import threading
+import time
+import wave
 
 import pygame
 
@@ -39,6 +41,7 @@ PRIORITY_DANGER = 0
 PRIORITY_CONVERSATION = 10
 PRIORITY_NARRATION = 20
 PRIORITY_FALLBACK = 30
+PLAYBACK_START_GRACE_SEC = 0.15
 
 
 @dataclass(order=True)
@@ -166,11 +169,29 @@ class AudioManager:
             pygame.mixer.music.load(request.filepath)
             pygame.mixer.music.play()
             request.started.set()
-            while pygame.mixer.music.get_busy() and not request.cancelled.is_set():
-                pygame.time.Clock().tick(20)
+            # pygame이 play() 직후 아직 busy=False를 반환하는 짧은 구간이 있다.
+            # WAV 길이보다 일찍 완료 처리하면 TTS 락이 풀리고 문장 끝이 잘릴 수 있다.
+            duration = AudioManager._audio_duration_seconds(request.filepath)
+            minimum_end = time.monotonic() + max(duration, PLAYBACK_START_GRACE_SEC)
+            clock = pygame.time.Clock()
+            while not request.cancelled.is_set():
+                if time.monotonic() >= minimum_end and not pygame.mixer.music.get_busy():
+                    break
+                clock.tick(50)
             log("audio_play_end")
         except Exception as e:
             print(f"[AUDIO ERROR] {request.filepath}: {e}")
+
+    @staticmethod
+    def _audio_duration_seconds(filepath: str) -> float:
+        """재생 완료 오판 방지를 위한 최소 재생 시간. WAV가 아니면 mixer busy 상태를 사용."""
+        if Path(filepath).suffix.lower() != ".wav":
+            return 0.0
+        try:
+            with wave.open(filepath, "rb") as wav:
+                return wav.getnframes() / float(wav.getframerate())
+        except (OSError, EOFError, wave.Error, ZeroDivisionError):
+            return 0.0
 
 
 _instance: AudioManager | None = None

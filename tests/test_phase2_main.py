@@ -122,17 +122,17 @@ def test_task_done_callback_logs_exception():
     print()
 
 
-def test_detection_loop_no_camera():
-    """P0 #9: 카메라 없을 때 detection_loop 가 graceful 종료."""
+def test_frame_loop_no_camera():
+    """P0 #9: 카메라 없을 때 _frame_loop 가 graceful 종료."""
     print("=" * 50)
     print("Phase 2-5: detection_loop 카메라 없음 → 종료")
     print("=" * 50)
 
-    from main import detection_loop
+    from main import _frame_loop
 
     with patch("main._open_camera", new_callable=AsyncMock, return_value=None):
         with patch("main.broadcast", new_callable=AsyncMock) as mock_broadcast:
-            asyncio.run(detection_loop())
+            asyncio.run(_frame_loop())
 
     # broadcast로 에러 전송 확인
     assert mock_broadcast.called, "broadcast 호출되어야 함"
@@ -143,13 +143,13 @@ def test_detection_loop_no_camera():
     print()
 
 
-def test_detection_loop_frame_fail_recovery():
+def test_frame_loop_frame_fail_recovery():
     """P0 #9: 프레임 읽기 연속 실패 시 웹캠 재연결 시도."""
     print("=" * 50)
     print("Phase 2-6: 프레임 실패 → 웹캠 재연결")
     print("=" * 50)
 
-    from main import detection_loop
+    from main import _frame_loop
 
     # 초기 캡처 — isOpened True, read()는 항상 (False, None)
     mock_cap = MagicMock()
@@ -170,7 +170,7 @@ def test_detection_loop_frame_fail_recovery():
     with patch("main._open_camera", mock_open):
         with patch("main.broadcast", new_callable=AsyncMock):
             with patch("main.MAX_FRAME_FAILS", 3):  # 3회 실패로 줄임
-                asyncio.run(detection_loop())
+                asyncio.run(_frame_loop())
 
     assert call_count == 2, f"_open_camera 2회 호출 (초기 + 재연결): {call_count}"
     assert mock_cap.release.called, "실패한 캡처 release 호출"
@@ -187,14 +187,15 @@ def test_detect_runs_in_thread():
     import main as main_mod
     import inspect
 
-    # detection_loop 소스에서 asyncio.to_thread(detect 가 있는지 확인
-    source = inspect.getsource(main_mod.detection_loop)
+    # _ai_loop 소스에서 asyncio.to_thread(detect 가 있는지 확인
+    source = inspect.getsource(main_mod._ai_loop)
     assert "asyncio.to_thread(detect" in source or "to_thread(detect" in source, \
         "detect()가 asyncio.to_thread로 감싸져야 함"
     print("[PASS] Case 1: detection_loop 소스에 asyncio.to_thread(detect) 존재")
 
-    # create_task에 add_done_callback이 있는지 확인
-    assert "add_done_callback" in source, \
+    # startup에서 백그라운드 태스크에 add_done_callback이 있는지 확인
+    startup_source = inspect.getsource(main_mod.startup)
+    assert "add_done_callback" in startup_source, \
         "create_task에 add_done_callback 등록해야 함"
     print("[PASS] Case 2: create_task에 add_done_callback 등록됨")
     print()
@@ -215,14 +216,10 @@ def test_unused_imports_removed():
         if "from server.main_server" in source else True, \
         "current_stage import가 남아있으면 안 됨"
 
-    # app만 import하는지 확인
-    lines = source.split("\n")
-    for line in lines:
-        if "from server.main_server import" in line:
-            assert "current_stage" not in line, f"current_stage가 import에 남아있음: {line}"
-            assert "learning_active" not in line, f"learning_active가 import에 남아있음: {line}"
-            assert "app" in line, f"app은 import해야 함: {line}"
-            break
+    import_block = source.split("from server.main_server import", 1)[1].split(")", 1)[0]
+    assert "current_stage" not in import_block
+    assert "learning_active" not in import_block
+    assert "app" in import_block
     print("[PASS] Case 1: top-level import에 current_stage, learning_active 없음")
     print()
 
@@ -241,9 +238,10 @@ def test_shutdown_event_exists():
         "shutdown 이벤트 핸들러가 있어야 함"
     print("[PASS] Case 1: @app.on_event('shutdown') 핸들러 존재")
 
-    # shutdown 함수가 _detection_task를 cancel하는지
+    # shutdown 함수가 분리된 프레임/AI 태스크를 cancel하는지
     shutdown_source = inspect.getsource(main_mod.shutdown)
-    assert "_detection_task" in shutdown_source, "shutdown에서 _detection_task 정리"
+    assert "_frame_task" in shutdown_source, "shutdown에서 _frame_task 정리"
+    assert "_ai_task" in shutdown_source, "shutdown에서 _ai_task 정리"
     assert "cancel" in shutdown_source, "shutdown에서 task.cancel() 호출"
     print("[PASS] Case 2: shutdown에서 detection_task cancel 처리")
     print()
@@ -254,8 +252,8 @@ if __name__ == "__main__":
     test_open_camera_retry_then_success()
     test_open_camera_all_fail()
     test_task_done_callback_logs_exception()
-    test_detection_loop_no_camera()
-    test_detection_loop_frame_fail_recovery()
+    test_frame_loop_no_camera()
+    test_frame_loop_frame_fail_recovery()
     test_detect_runs_in_thread()
     test_unused_imports_removed()
     test_shutdown_event_exists()

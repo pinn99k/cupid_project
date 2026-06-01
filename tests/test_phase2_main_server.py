@@ -179,10 +179,10 @@ def test_stt_empty_text_ignored():
     print()
 
 
-def test_stt_text_calls_llm():
-    """P0 #10: stt_text가 llm_client.call_async를 호출하는지 테스트."""
+def test_stt_text_is_ignored_by_dashboard_handler():
+    """음성 대화는 VoicePipeline이 담당하므로 대시보드 stt_text는 무시."""
     print("=" * 50)
-    print("Phase 2f: stt_text → LLM call_async 호출")
+    print("Phase 2f: dashboard stt_text → 무시")
     print("=" * 50)
 
     from server.main_server import handle_dashboard_message, app_state
@@ -213,24 +213,11 @@ def test_stt_text_calls_llm():
 
     asyncio.run(_run())
 
-    # call_async가 호출되었는지 확인
-    mock_call_async.assert_called_once()
-    args = mock_call_async.call_args
-    assert args[0][1] == "안녕하세요", f"LLM에 전달된 텍스트: {args[0][1]}"
-    print("[PASS] Case 1: call_async('test_prompt', '안녕하세요') 호출됨")
-
-    # broadcast 확인
-    assert len(broadcast_calls) == 1
-    resp = broadcast_calls[0]
-    assert resp["type"] == "stt_response"
-    assert resp["message"] == "안녕! 시아가 도와줄게."
-    assert resp["stage"] == 2
-    print(f"[PASS] Case 2: stt_response broadcast → {resp['message']}")
-
-    # TTS, audio 호출 확인
-    mock_tts.get_or_create.assert_called_once_with("안녕! 시아가 도와줄게.")
-    mock_audio.play_path.assert_called_once()
-    print("[PASS] Case 3: TTS + audio 호출됨")
+    mock_call_async.assert_not_called()
+    mock_tts.get_or_create.assert_not_called()
+    mock_audio.play_path.assert_not_called()
+    assert broadcast_calls == []
+    print("[PASS] Case 1: VoicePipeline 외부의 stt_text는 처리하지 않음")
 
     app_state.current_stage = 1
     print()
@@ -299,7 +286,7 @@ if __name__ == "__main__":
     test_ack_broadcast_start_learning()
     test_ack_broadcast_stop_learning()
     test_stt_empty_text_ignored()
-    test_stt_text_calls_llm()
+    test_stt_text_is_ignored_by_dashboard_handler()
     test_health_uses_app_state()
     test_new_session_error_handling()
     print(f"[결과] Phase 2 PASS - AppState/ack/stt/health/에러핸들링 모두 통과")

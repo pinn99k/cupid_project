@@ -5,6 +5,7 @@
 """
 
 import asyncio
+from collections import deque
 import io
 import wave
 
@@ -19,7 +20,7 @@ class MicCapture:
         self,
         device_index=None,
         sample_rate: int = 16000,
-        silence_threshold: int = 500,
+        silence_threshold: int = 100,
         silence_duration: float = 1.5,
         max_duration: float = 10,
     ):
@@ -38,6 +39,7 @@ class MicCapture:
         self.max_duration = max_duration
         # 직전 녹음의 평균 RMS(저음량 되묻기 판정용, Unit 4). 발화 없으면 0.0.
         self.last_rms: float = 0.0
+        self.last_error: str | None = None
 
     # ------------------------------------------------------------------
     # 공개 비동기 인터페이스
@@ -61,6 +63,7 @@ class MicCapture:
     # ------------------------------------------------------------------
 
     def _record_sync(self) -> bytes | None:
+
         """동기 녹음 로직. asyncio.to_thread에서 실행.
 
         sounddevice.InputStream으로 프레임 단위 읽기 후
@@ -68,17 +71,20 @@ class MicCapture:
         음성 시작 → 녹음 → 무음 지속 → 종료 흐름.
         """
         chunk_size = 1024  # 프레임 단위 읽기 크기
-        frames_per_sec = self.sample_rate / chunk_size
+        pre_roll_chunks = max(1, int(0.4 * self.sample_rate / chunk_size))
 
+        frames_per_sec = self.sample_rate / chunk_size
         # 무음 연속 프레임 수 임계값
         silence_frames_limit = int(self.silence_duration * frames_per_sec)
         max_frames = int(self.max_duration * frames_per_sec)
 
         recorded: list[np.ndarray] = []
+        pre_roll: deque[np.ndarray] = deque(maxlen=pre_roll_chunks)
         speech_rms: list[float] = []  # 발화 구간 RMS (평균 음량 계산용)
         speech_started = False
         silence_frames = 0
         self.last_rms = 0.0
+        self.last_error = None
 
         try:
             with sd.InputStream(
@@ -89,31 +95,41 @@ class MicCapture:
                 blocksize=chunk_size,
             ) as stream:
                 total_frames = 0
+
                 while total_frames < max_frames:
                     chunk, _ = stream.read(chunk_size)
                     chunk = chunk.flatten()
                     rms = self._calc_rms(chunk)
 
                     if rms > self.silence_threshold:
-                        # 음성 구간
+                        # 음성 시작 로그 (최초 1회만)
+                        if not speech_started:
+                            print("[MicCapture] 음성 감지 시작")
+                            recorded.extend(pre_roll)
+
                         speech_started = True
                         silence_frames = 0
+
                         recorded.append(chunk)
                         speech_rms.append(rms)
+
                     else:
                         # 무음 구간
                         if speech_started:
                             recorded.append(chunk)  # 후미 무음도 포함
                             silence_frames += 1
+
                             if silence_frames >= silence_frames_limit:
-                                # 충분한 무음 → 발화 종료
+                                print("[MicCapture] 음성 감지 종료")
                                 break
-                        # 아직 발화 시작 전이면 대기만 (녹음 안 함)
+                        else:
+                            pre_roll.append(chunk)
 
                     total_frames += 1
 
         except Exception as e:
-            print(f"[MicCapture] 녹음 오류: {self._format_recording_error(e)}")
+            self.last_error = self._format_recording_error(e)
+            print(f"[MicCapture] 녹음 오류: {self.last_error}")
             return None
 
         if not recorded:
@@ -122,8 +138,13 @@ class MicCapture:
         # 발화 구간 평균 음량 기록 (저음량 되묻기 판정용)
         if speech_rms:
             self.last_rms = float(np.mean(speech_rms))
+            print(f"[MicCapture] 평균 RMS={self.last_rms:.0f}")
+
+        duration = len(np.concatenate(recorded)) / self.sample_rate
+        print(f"[MicCapture] 녹음 길이={duration:.2f}초")
 
         audio_data = np.concatenate(recorded, axis=0)
+
         return self._to_wav_bytes(audio_data)
 
     # ------------------------------------------------------------------

@@ -28,6 +28,7 @@ class VoicePipeline:
         scene_provider=None,
         count_question=None,
         scene_fresh_sec: float = 2.0,
+        low_volume_rms: float = 0.0,
     ):
         """
         Args:
@@ -47,6 +48,7 @@ class VoicePipeline:
         self._scene_provider = scene_provider
         self._count_question = count_question
         self._scene_fresh_ms = scene_fresh_sec * 1000
+        self._low_volume_rms = low_volume_rms
         self._running = False
         self._chat_history: list[dict] = []  # {"role": "user"|"assistant", "content": str}
         self._max_history = 8  # 최근 4턴만 유지해 LLM 응답 지연 최소화
@@ -82,8 +84,16 @@ class VoicePipeline:
         await broadcast({"type": "voice_listening", "timestamp": int(time.time() * 1000)})
         audio_data = await self._mic.listen()
         if audio_data is None:
-            return  # 발화 없음 → 다시 듣기
+            return  # 발화 없음(평상시 침묵) → 다시 듣기. 되묻기 안 함(잔소리 방지)
         self._cancel_narration()
+
+        # 1-1. 저음량 되묻기 (Unit 4) — 들리긴 했으나 STT엔 너무 작은 경우.
+        # STT를 건너뛰고 즉답으로 "더 크게" 요청 (LLM 미사용 → 빠르고 안전).
+        rms = getattr(self._mic, "last_rms", None)
+        if self._low_volume_rms > 0 and isinstance(rms, (int, float)) and 0 < rms < self._low_volume_rms:
+            print(f"[VoicePipeline] 저음량(RMS={rms:.0f}) → 되묻기")
+            await self._play_reprompt("retry_louder.wav", "저음량")
+            return
 
         # 2. STT — broadcast "voice_processing"
         await broadcast({"type": "voice_processing", "timestamp": int(time.time() * 1000)})
@@ -91,18 +101,26 @@ class VoicePipeline:
         text = await self._stt.transcribe(audio_data)
         print(f"[VoicePipeline] STT 완료: {time.perf_counter() - stt_started:.2f}초")
         if not text or not text.strip():
-            return  # 인식 불가 → 다시 듣기
+            # 인식 불가 (Unit 4) — 적정 음량이나 알아듣지 못함 → "다시 말해줄래?"
+            print("[VoicePipeline] 인식 불가 → 되묻기")
+            await self._play_reprompt("retry_unclear.wav", "인식불가")
+            return
 
         text = text.strip()
         print(f"[VoicePipeline] STT 결과: {text}")
 
         # 2-1. 호출어 게이팅 (결정 A2/A3)
-        #  - 호출어 "시아야" 없음 → 무시 (대시보드 broadcast도 안 함 = 잡음/에코 차단)
-        #  - 있음 → 호출어 뒤 질문만 추출. 질문이 비면("시아야"만) 무시.
+        #  - 호출어 "시아야" 없음(None) → 무시 (대시보드 broadcast도 안 함 = 잡음/에코 차단)
+        #  - 호출어만 있고 질문 없음("") → 되묻기 "응? 불렀어?" (Unit 4)
+        #  - 질문 있음 → 그 질문으로 진행
         from server.wake_word import parse_wake_word
         query = parse_wake_word(text)
-        if not query:  # None(비호출) 또는 ""(호출만, 질문 없음)
+        if query is None:  # 비호출 → 잡음으로 보고 조용히 무시
             print(f"[VoicePipeline] 호출어 없음 → 무시: {text!r}")
+            return
+        if query == "":  # "시아야"만 부르고 질문 없음 → 되묻기
+            print("[VoicePipeline] 호출만(질문 없음) → 되묻기")
+            await self._play_reprompt("retry_what.wav", "호출만")
             return
         text = query
 
@@ -195,6 +213,26 @@ class VoicePipeline:
         except Exception as e:
             print(f"[VoicePipeline] TTS 오류: {e}")
             await broadcast({"type": "error", "message": f"TTS 오류: {type(e).__name__}", "timestamp": int(time.time() * 1000)})
+            await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+
+    async def _play_reprompt(self, audio_file: str, reason: str):
+        """되묻기 사전녹음 재생 (Unit 4) — LLM 미사용 즉답.
+        무음/인식불가/저음량 등 '못 알아들음'에 대한 친절한 재요청."""
+        await broadcast({
+            "type": "voice_reprompt",
+            "reason": reason,
+            "timestamp": int(time.time() * 1000),
+        })
+        if not self._audio_manager:
+            return  # 오디오 매니저 없으면(테스트 등) 분기만 수행
+        try:
+            async with self._tts_lock:
+                await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
+                request = self._audio_manager.play(audio_file, priority=PRIORITY_FALLBACK)
+                await self._audio_manager.wait(request)
+                await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+        except Exception as e:
+            print(f"[VoicePipeline] 되묻기 재생 오류: {e}")
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
 
     async def _cooldown_on_fail(self):

@@ -35,7 +35,7 @@ from server.websocket_handler import broadcast
 from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX,
                            MIC_DEVICE_INDEX, VAD_SILENCE_THRESHOLD,
                            VAD_SILENCE_DURATION, VAD_MAX_DURATION, STT_LANGUAGE,
-                           RELEVANCE_MIN_AREA)
+                           RELEVANCE_MIN_AREA, VAD_LOW_VOLUME_RMS)
 from server.mic import MicCapture
 from server.stt import STTClient
 from server.voice_pipeline import VoicePipeline
@@ -347,6 +347,7 @@ async def startup():
         audio_manager=get_audio_manager(),
         scene_provider=get_scene,
         count_question=increment_question_count,
+        low_volume_rms=VAD_LOW_VOLUME_RMS,
     )
     set_voice_pipeline(voice_pipeline)
     set_cancel_narration(cancel_narration)

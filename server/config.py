@@ -82,6 +82,9 @@ VAD_SILENCE_THRESHOLD: int = int(os.getenv("VAD_SILENCE_THRESHOLD", "500"))
 # 0.8s: 말끝이 잘리던 문제 완화(Unit 5). 짧으면 발화 중간 침묵에 조기 종료됨.
 VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "0.8"))
 VAD_MAX_DURATION: float = float(os.getenv("VAD_MAX_DURATION", "10"))
+# 저음량 되묻기(Unit 4): 발화 평균 RMS가 이 값 미만이면 "더 크게 말해줄래?".
+# silence_threshold(500)보다 높게 — 들리긴 하나 STT엔 너무 작은 구간. 0이면 비활성.
+VAD_LOW_VOLUME_RMS: float = float(os.getenv("VAD_LOW_VOLUME_RMS", "800"))
 
 # STT 설정
 STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "ko-KR")

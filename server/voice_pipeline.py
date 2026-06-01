@@ -25,18 +25,28 @@ class VoicePipeline:
         tts_lock: asyncio.Lock,
         cancel_narration=None,
         audio_manager=None,
+        scene_provider=None,
+        count_question=None,
+        scene_fresh_sec: float = 2.0,
     ):
         """
         Args:
             mic: MicCapture 인스턴스
             stt: STTClient 인스턴스
             tts_lock: TTS 재생 전역 Lock (narration/danger TTS와 경합 방지)
+            scene_provider: () -> (enriched|None, ts_ms). _ai_loop이 채운 최신 장면을
+                읽어 VQA 근거로 사용 (YOLO 재실행 금지, shared_resources.md §6).
+            count_question: 답변 성공 시 호출할 콜백 (question_count 증가).
+            scene_fresh_sec: 장면이 이 시간 이내면 "신선"으로 보고 VQA, 아니면 일반 대화.
         """
         self._mic = mic
         self._stt = stt
         self._tts_lock = tts_lock
         self._cancel_narration = cancel_narration or (lambda: None)
         self._audio_manager = audio_manager
+        self._scene_provider = scene_provider
+        self._count_question = count_question
+        self._scene_fresh_ms = scene_fresh_sec * 1000
         self._running = False
         self._chat_history: list[dict] = []  # {"role": "user"|"assistant", "content": str}
         self._max_history = 8  # 최근 4턴만 유지해 LLM 응답 지연 최소화
@@ -107,11 +117,20 @@ class VoicePipeline:
             "timestamp": int(time.time() * 1000),
         })
 
-        # 3. LLM 호출
-        from ai_core.llm_client import call_async, SYSTEM_PROMPT
+        # 3. LLM 호출 — 신선한 장면이 있으면 VQA(장면 근거), 없으면 일반 대화 (Unit 3b)
+        from ai_core.llm_client import call_async, SYSTEM_PROMPT, VQA_PROMPT
+
+        base_prompt = SYSTEM_PROMPT
+        if self._scene_provider:
+            scene, scene_ts = self._scene_provider()
+            fresh = scene is not None and (time.time() * 1000 - scene_ts) <= self._scene_fresh_ms
+            if fresh:
+                from ai_core.scene_text import scene_to_korean
+                base_prompt = f"{VQA_PROMPT}\n\n[현재 장면] {scene_to_korean(scene)}"
+                print(f"[VoicePipeline] VQA 모드 — 장면 근거 사용")
 
         # 히스토리를 system prompt에 포함
-        context = self._build_context(SYSTEM_PROMPT)
+        context = self._build_context(base_prompt)
         try:
             llm_started = time.perf_counter()
             response = await call_async(context, text)
@@ -128,8 +147,10 @@ class VoicePipeline:
             await self._cooldown_on_fail()
             return
 
-        # LLM 성공 — 연속 실패 카운터 리셋
+        # LLM 성공 — 연속 실패 카운터 리셋 + 질문 카운트 증가(단일 writer)
         self._consecutive_fails = 0
+        if self._count_question:
+            self._count_question()
 
         # 히스토리 저장
         self._chat_history.append({"role": "user", "content": text})

@@ -24,6 +24,8 @@ from ai_core.tts import get_tts_cache
 from server.main_server import (
     app,
     get_frame,
+    get_scene,
+    increment_question_count,
     set_cancel_narration,
     set_frame,
     set_scene,
@@ -343,6 +345,8 @@ async def startup():
         tts_lock=_tts_lock,
         cancel_narration=cancel_narration,
         audio_manager=get_audio_manager(),
+        scene_provider=get_scene,
+        count_question=increment_question_count,
     )
     set_voice_pipeline(voice_pipeline)
     set_cancel_narration(cancel_narration)

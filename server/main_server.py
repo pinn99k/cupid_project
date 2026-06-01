@@ -170,6 +170,9 @@ async def handle_dashboard_message(msg: dict):
             app_state.learning_active = True
             app_state.current_stage = msg.get("stage", 1)
             print(f"[SERVER] 학습 시작: Stage {app_state.current_stage}")
+            # 학습 시작 = 마이크 청취 활성화
+            if _voice_pipeline:
+                _voice_pipeline.start()
             await broadcast({
                 "type": "ack",
                 "event": "start_learning",
@@ -178,12 +181,29 @@ async def handle_dashboard_message(msg: dict):
 
         elif event == "stop_learning":
             reset_session()
+            # 학습 중지 = 마이크 청취 일시 중지
+            if _voice_pipeline:
+                _voice_pipeline.stop_listening()
             print("[SERVER] 학습 중지 + 세션 리셋")
             await broadcast({
                 "type": "ack",
                 "event": "stop_learning",
                 "stage": app_state.current_stage,
             })
+
+        elif event == "start_pipeline":
+            # 대시보드 마이크 시작 버튼 → 청취 활성화
+            if _voice_pipeline:
+                _voice_pipeline.start()
+            print("[SERVER] 파이프라인 청취 활성화")
+            await broadcast({"type": "ack", "event": "start_pipeline"})
+
+        elif event == "stop_pipeline":
+            # 대시보드 마이크 정지 버튼 → 청취 일시 중지
+            if _voice_pipeline:
+                _voice_pipeline.stop_listening()
+            print("[SERVER] 파이프라인 청취 일시 중지")
+            await broadcast({"type": "ack", "event": "stop_pipeline"})
 
         elif event == "new_session":
             reset_session()

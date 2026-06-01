@@ -18,12 +18,12 @@ REQUEST_INTERVAL_SECONDS = 7
 
 SCRIPTS = {
     # 시연 필수 음원을 먼저 생성
-    "warn_emergency": "멈춰!",
-    "warn_object": "앞에 장애물이 있어, 조심해",
-    "warn_person": "앞에 사람이 있어, 천천히",
+    "warn_emergency": "조심해! 앞에 위험한 물체가 있어.",
+    "warn_object": "앞에 장애물이 있어, 조심해.",
+    "warn_person": "조심해, 앞에 사람이 있어.",
     "retry_what": "응, 불렀어?",
-    "retry_louder": "조금 더 크게 말해줄래?",
-    "retry_unclear": "잘 못 들었어. 다시 말해줄래?",
+    "retry_louder": "조금만 더 크게 말해줄래?",
+    "retry_unclear": "미안해, 한 번만 더 말해줄래?",
     "buffer_01": "잠깐만, 보고 있어",
     "praise_01": "잘하고 있어!",
     "gala_01": "시아와 함께 걸어볼까?",
@@ -33,7 +33,7 @@ SCRIPTS = {
     "warn_stairs": "계단이야, 조심해",
     "praise_02": "대단해, 혼자서 잘 걷고 있어",
     "praise_03": "아주 잘했어!",
-    "praise_04": "용감하다! 계속 가보자",
+    "praise_04": "용감하다! 계속 가보자!",
     "praise_05": "완벽해, 그렇게 하면 돼",
     "session_start": "안녕! 오늘도 같이 걸어보자",
     "session_end": "오늘 정말 잘했어, 다음에 또 만나자",

@@ -33,8 +33,17 @@ def _env_value(key: str, default: str) -> str:
 # LLM_PROVIDER: groq | gemini | openai
 LLM_PROVIDER: str = _env_value("LLM_PROVIDER", "groq")
 LLM_MODEL: str = _env_value("LLM_MODEL", "llama-3.3-70b-versatile")
-LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "70"))
-LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.4"))
+# 400 → 1024: gemini-2.5-flash thinking 토큰(≈300~400)이 max_tokens 예산에 포함됨.
+# prompt=452 + thinking=385 → 출력 공간 15토큰 → 문장 잘림.
+# thinking 비활성화(LLM_THINKING_BUDGET=0)와 병행하여 안전 여유 확보.
+LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "1024"))
+
+# Gemini 2.5-flash thinking 토큰 예산 (0=비활성화, -1=모델 기본값)
+# thinking 토큰이 max_tokens에 포함되어 실제 응답 공간을 잠식하는 문제 방지.
+# 대화형 응답(1~2문장)은 thinking 없이도 충분히 생성 가능.
+LLM_THINKING_BUDGET: int = int(os.getenv("LLM_THINKING_BUDGET", "0"))
+# 0.4 → 0.7: 더 자연스럽고 따뜻한 말투를 위해 온도 상향.
+LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 
 # API 키 (사용하는 공급자 키만 있으면 됨)
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
@@ -83,9 +92,11 @@ if MIC_DEVICE_INDEX is not None:
 
 # VAD 설정
 VAD_SILENCE_THRESHOLD: int = int(os.getenv("VAD_SILENCE_THRESHOLD", "100"))
-# 0.5s: 응답 대기 시간을 줄이기 위한 기본값. 짧으면 발화 중간 침묵에 조기 종료됨.
-VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "1.8"))
-VAD_MAX_DURATION: float = float(os.getenv("VAD_MAX_DURATION", "10"))
+# 0.5s: 발화 종료 판정 무음 시간.
+# ⚠️ .env에 이전 값(1.8 등)이 남아있으면 녹음이 길어짐. .env 확인 필수.
+VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "0.5"))
+# 7s: 최대 녹음 시간. 아이 발화가 7초를 넘는 경우는 거의 없음.
+VAD_MAX_DURATION: float = float(os.getenv("VAD_MAX_DURATION", "7"))
 # 저음량 되묻기(Unit 4): 발화 평균 RMS가 이 값 미만이면 "더 크게 말해줄래?".
 # silence_threshold보다 높게 — 들리긴 하나 STT엔 너무 작은 구간. 0이면 비활성.
 VAD_LOW_VOLUME_RMS: float = float(os.getenv("VAD_LOW_VOLUME_RMS", "0"))

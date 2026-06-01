@@ -101,7 +101,19 @@ class VoicePipeline:
         text = await self._stt.transcribe(audio_data)
         print(f"[VoicePipeline] STT 완료: {time.perf_counter() - stt_started:.2f}초")
         if not text or not text.strip():
-            # 인식 불가 (Unit 4) — 적정 음량이나 알아듣지 못함 → "다시 말해줄래?"
+            # STT None: 진짜 못알아들음 vs 시스템(네트워크/엔진) 오류를 구분 (Unit 4)
+            status = getattr(self._stt, "last_status", "unrecognized")
+            if status == "error":
+                # 우리 시스템 문제 → 아이한테 "다시 말해줄래"라고 잘못 말하지 않음.
+                # 조용히 다시 듣기 + 대시보드에만 오류 통지.
+                print("[VoicePipeline] STT 시스템 오류 → 되묻기 생략, 재청취")
+                await broadcast({
+                    "type": "error",
+                    "message": "STT 시스템 오류(네트워크/엔진)",
+                    "timestamp": int(time.time() * 1000),
+                })
+                return
+            # 적정 음량이나 발음을 알아듣지 못함 → "다시 말해줄래?"
             print("[VoicePipeline] 인식 불가 → 되묻기")
             await self._play_reprompt("retry_unclear.wav", "인식불가")
             return

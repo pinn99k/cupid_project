@@ -27,6 +27,8 @@ class STTClient:
         """
         self._recognizer = sr.Recognizer()
         self._language = language
+        # 직전 결과 상태: "ok" | "unrecognized"(진짜 못알아들음) | "error"(네트워크/엔진 오류)
+        self.last_status: str = "ok"
 
     # ------------------------------------------------------------------
     # 공개 비동기 인터페이스
@@ -61,18 +63,25 @@ class STTClient:
                 audio = self._recognizer.record(source)
 
             text = self._recognizer.recognize_google(audio, language=self._language)
-            return text.strip() if text else None
+            if text and text.strip():
+                self.last_status = "ok"
+                return text.strip()
+            self.last_status = "unrecognized"
+            return None
 
         except sr.UnknownValueError:
-            # 음성이 있지만 인식 불가 (무음, 잡음 등)
-            logger.debug("[STTClient] 음성 인식 불가 (UnknownValueError)")
+            # 음성이 있지만 인식 불가 (발음 불분명, 잡음 등) — 진짜 '못 알아들음'
+            self.last_status = "unrecognized"
+            print("[STT] 음성 인식 불가 (UnknownValueError)")
             return None
 
         except sr.RequestError as e:
-            # API 통신 오류
-            logger.warning(f"[STTClient] Google STT API 오류: {e}")
+            # Google 무료 STT 통신 오류(네트워크/할당량) — 사용자 잘못 아님
+            self.last_status = "error"
+            print(f"[STT] ⚠ Google STT API 오류(네트워크/할당량 의심): {e}")
             return None
 
         except Exception as e:
-            logger.error(f"[STTClient] 예상치 못한 오류: {e}")
+            self.last_status = "error"
+            print(f"[STT] ⚠ 예상치 못한 오류: {type(e).__name__}: {e}")
             return None

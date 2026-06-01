@@ -76,7 +76,8 @@ if MIC_DEVICE_INDEX is not None:
 
 # VAD 설정
 VAD_SILENCE_THRESHOLD: int = int(os.getenv("VAD_SILENCE_THRESHOLD", "500"))
-VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "0.6"))
+# 0.8s: 말끝이 잘리던 문제 완화(Unit 5). 짧으면 발화 중간 침묵에 조기 종료됨.
+VAD_SILENCE_DURATION: float = float(os.getenv("VAD_SILENCE_DURATION", "0.8"))
 VAD_MAX_DURATION: float = float(os.getenv("VAD_MAX_DURATION", "10"))
 
 # STT 설정

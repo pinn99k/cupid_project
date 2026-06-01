@@ -5,6 +5,7 @@ Step 1-1 테스트: YOLO 감지 (웹캠 필요)
 
 import sys
 import os
+import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # .env 로드 (config.py 의존)
@@ -32,7 +33,8 @@ def test_detect_with_webcam():
     cap = cv2.VideoCapture(0)
     ret, frame = cap.read()
     cap.release()
-    assert ret, "웹캠 프레임 읽기 실패"
+    if not ret:
+        pytest.skip("웹캠 접근 권한 또는 연결된 카메라가 없음")
     print(f"  OK: {frame.shape[1]}x{frame.shape[0]}")
 
     print("\n[3] 감지 실행...")

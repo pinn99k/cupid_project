@@ -29,6 +29,8 @@ class VoicePipeline:
         count_question=None,
         scene_fresh_sec: float = 2.0,
         low_volume_rms: float = 0.0,
+        output_settle_sec: float = 0.0,
+        reprompt_cooldown_sec: float = 2.0,
     ):
         """
         Args:
@@ -49,11 +51,15 @@ class VoicePipeline:
         self._count_question = count_question
         self._scene_fresh_ms = scene_fresh_sec * 1000
         self._low_volume_rms = low_volume_rms
+        self._output_settle_sec = output_settle_sec
+        self._reprompt_cooldown_sec = reprompt_cooldown_sec
         self._running = False
         self._chat_history: list[dict] = []  # {"role": "user"|"assistant", "content": str}
         self._max_history = 4  # 최근 2턴만 유지해 LLM 응답 지연 최소화
         self._consecutive_fails = 0
         self._cooldown_steps = [2, 5, 10, 30]  # 초 단위 쿨다운 단계
+        self._last_mic_error = None
+        self._last_reprompt_at = 0.0
 
     async def run(self):
         """메인 턴 루프. 한 번에 한 턴만 실행."""
@@ -80,11 +86,24 @@ class VoicePipeline:
         if self._audio_manager:
             await self._audio_manager.wait_until_idle()
 
-        # 1. 듣기 — broadcast "voice_listening"
+        # 1. 듣기
         await broadcast({"type": "voice_listening", "timestamp": int(time.time() * 1000)})
         audio_data = await self._mic.listen()
+
         if audio_data is None:
-            return  # 발화 없음(평상시 침묵) → 다시 듣기. 되묻기 안 함(잔소리 방지)
+            mic_error = getattr(self._mic, "last_error", None)
+            if mic_error:
+                if mic_error != self._last_mic_error:
+                    self._last_mic_error = mic_error
+                    await broadcast({
+                        "type": "error",
+                        "message": f"마이크 입력 오류: {mic_error}",
+                        "timestamp": int(time.time() * 1000),
+                    })
+                await asyncio.sleep(1)
+            return
+        self._last_mic_error = None
+
         self._cancel_narration()
 
         # 1-1. 저음량 되묻기 (Unit 4) — 들리긴 했으나 STT엔 너무 작은 경우.
@@ -135,10 +154,6 @@ class VoicePipeline:
             await self._play_reprompt("retry_what.wav", "호출만")
             return
         text = query
-
-        # 2-2. 즉시 "잠깐만" 필러 — LLM 대기 동안 무응답 침묵 방지 (비대기)
-        if self._audio_manager:
-            self._audio_manager.play("buffer_01.wav", priority=PRIORITY_FALLBACK)
 
         # 사용자 질문을 대시보드에 표시 (호출어 제거된 질문)
         await broadcast({
@@ -220,6 +235,7 @@ class VoicePipeline:
                     priority=PRIORITY_CONVERSATION,
                 )
                 await am.wait(request)
+                await self._wait_for_output_settle()
 
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
         except Exception as e:
@@ -230,6 +246,12 @@ class VoicePipeline:
     async def _play_reprompt(self, audio_file: str, reason: str):
         """되묻기 사전녹음 재생 (Unit 4) — LLM 미사용 즉답.
         무음/인식불가/저음량 등 '못 알아들음'에 대한 친절한 재요청."""
+        now = time.monotonic()
+        if (now - self._last_reprompt_at) < self._reprompt_cooldown_sec:
+            print(f"[VoicePipeline] 되묻기 쿨다운 중 → 생략: {reason}")
+            return
+        self._last_reprompt_at = now
+
         await broadcast({
             "type": "voice_reprompt",
             "reason": reason,
@@ -242,10 +264,16 @@ class VoicePipeline:
                 await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
                 request = self._audio_manager.play(audio_file, priority=PRIORITY_FALLBACK)
                 await self._audio_manager.wait(request)
+                await self._wait_for_output_settle()
                 await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
         except Exception as e:
             print(f"[VoicePipeline] 되묻기 재생 오류: {e}")
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+
+    async def _wait_for_output_settle(self):
+        """스피커 출력의 꼬리가 마이크에 되먹임되지 않도록 락 안에서 잠깐 대기."""
+        if self._output_settle_sec > 0:
+            await asyncio.sleep(self._output_settle_sec)
 
     async def _cooldown_on_fail(self):
         """연속 LLM 실패 시 점진적 쿨다운 대기."""
@@ -256,10 +284,8 @@ class VoicePipeline:
         await asyncio.sleep(delay)
 
     async def _play_fallback(self, error_msg: str):
-        """에러 발생 시 fallback 오디오 재생."""
+        """에러 발생 시 대시보드에 알리고 다음 청취 턴으로 복귀."""
         try:
-            from ai_core.audio_manager import get_audio_manager
-
             # 에러 메시지 broadcast
             await broadcast({
                 "type": "error",
@@ -267,13 +293,8 @@ class VoicePipeline:
                 "timestamp": int(time.time() * 1000),
             })
 
-            # Fallback 오디오 재생
-            async with self._tts_lock:
-                await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
-                am = self._audio_manager or get_audio_manager()
-                request = am.play("buffer_01.wav", priority=PRIORITY_FALLBACK)
-                await am.wait(request)
-                await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+            # 시스템 오류일 때 "잠깐만"을 반복하면 정상 처리처럼 들린다.
+            # 대시보드에 오류만 알리고 다음 청취 턴으로 복귀한다.
         except Exception as e:
             print(f"[VoicePipeline] Fallback 재생 오류: {e}")
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})

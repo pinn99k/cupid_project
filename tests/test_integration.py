@@ -173,12 +173,13 @@ class TestSessionReset:
     def test_reset_session_resets_pipeline(self):
         """reset_session()이 voice_pipeline.reset()을 호출하는지."""
         mock_pipeline = MagicMock()
-        with patch("server.main_server.get_audio_manager", side_effect=ImportError), \
-             patch.dict("sys.modules", {"main": MagicMock(voice_pipeline=mock_pipeline)}):
-            from server.main_server import reset_session, app_state
+        with patch("server.main_server.get_audio_manager", side_effect=ImportError):
+            from server.main_server import reset_session, app_state, set_voice_pipeline
+            set_voice_pipeline(mock_pipeline)
             app_state.current_stage = 2
             reset_session()
             mock_pipeline.reset.assert_called_once()
+            set_voice_pipeline(None)
 
 
 # ===========================================================================
@@ -203,15 +204,15 @@ class TestChatHistoryContext:
         assert result.startswith("기본 프롬프트")
 
     def test_history_sliding_window(self, pipeline):
-        """20개 초과 시 오래된 것부터 제거."""
+        """최대 히스토리 수 초과 시 오래된 것부터 제거."""
         for i in range(15):
             pipeline._chat_history.append({"role": "user", "content": f"msg_{i}"})
             pipeline._chat_history.append({"role": "assistant", "content": f"resp_{i}"})
-        # 30개 → _max_history=20으로 잘라야 함
+        # 30개 → 현재 설정된 _max_history만큼 잘라야 함
         if len(pipeline._chat_history) > pipeline._max_history:
             pipeline._chat_history = pipeline._chat_history[-pipeline._max_history:]
-        assert len(pipeline._chat_history) == 20
-        assert pipeline._chat_history[0]["content"] == "msg_5"
+        assert len(pipeline._chat_history) == pipeline._max_history
+        assert pipeline._chat_history[0]["content"] == "msg_13"
 
 
 # ===========================================================================

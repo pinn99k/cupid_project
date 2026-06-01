@@ -36,7 +36,7 @@ class TestMicCaptureInit:
         mic = MicCapture()
         assert mic.device_index is None
         assert mic.sample_rate == 16000
-        assert mic.silence_threshold == 500
+        assert mic.silence_threshold == 100
         assert mic.silence_duration == 1.5
         assert mic.max_duration == 10
 
@@ -230,6 +230,31 @@ class TestRecordSync:
             result = mic._record_sync()
 
         assert result is None
+        assert "장치 없음" in mic.last_error
+
+    def test_includes_pre_roll_before_speech(self):
+        """임계값을 넘기 직전 오디오를 포함해 호출어 첫 음절 잘림을 방지."""
+        mic = MicCapture(
+            silence_threshold=100,
+            silence_duration=0.1,
+            max_duration=5,
+        )
+        quiet_lead = self._make_chunk(50)
+        speech_chunk = self._make_chunk(500)
+        silent_chunk = self._make_chunk(0)
+        chunks = [quiet_lead, speech_chunk] + [silent_chunk] * 20
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.read.side_effect = [(chunk, False) for chunk in chunks]
+
+        with patch("server.mic.sd.InputStream", return_value=mock_stream):
+            result = mic._record_sync()
+
+        with wave.open(io.BytesIO(result), "rb") as wf:
+            samples = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+        assert samples[0] == 50
 
     def test_formats_macos_portaudio_error_with_hints(self):
         """macOS PortAudio 입력 오류에는 권한/장치 안내를 덧붙인다."""

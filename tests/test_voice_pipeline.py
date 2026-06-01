@@ -104,7 +104,7 @@ class TestChatHistory:
         assert pipeline.chat_history == []
 
     def test_history_max_limit(self, pipeline):
-        # _max_history = 8, set 10 items manually
+        # Set more items than the configured history window.
         pipeline._chat_history = [
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg{i}"}
             for i in range(10)
@@ -113,9 +113,8 @@ class TestChatHistory:
         if len(pipeline._chat_history) > pipeline._max_history:
             pipeline._chat_history = pipeline._chat_history[-pipeline._max_history:]
 
-        assert len(pipeline._chat_history) == 8
-        # Oldest messages (index 0, 1) should be removed; last 8 remain
-        assert pipeline._chat_history[0]["content"] == "msg2"
+        assert len(pipeline._chat_history) == pipeline._max_history
+        assert pipeline._chat_history[0]["content"] == "msg6"
         assert pipeline._chat_history[-1]["content"] == "msg9"
 
     def test_chat_history_property_is_copy(self, pipeline):
@@ -182,6 +181,95 @@ class TestRunOneTurn:
         assert idx["user_stt"] < idx["stt_response"]
         assert idx["stt_response"] < idx["tts_start"]
         assert idx["tts_start"] < idx["tts_done"]
+
+    @pytest.mark.asyncio
+    async def test_full_turn_does_not_play_waiting_filler(self, mock_mic, mock_stt, tts_lock):
+        """정상 질문마다 '잠깐만' 필러를 자동 재생하지 않는다."""
+        mock_am = MagicMock()
+        mock_am.wait_until_idle = AsyncMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        mock_tts_cache = MagicMock()
+        mock_tts_cache.get_or_create = AsyncMock(return_value="/tmp/fake.wav")
+        vp = VoicePipeline(
+            mic=mock_mic,
+            stt=mock_stt,
+            tts_lock=tts_lock,
+            audio_manager=mock_am,
+        )
+
+        with patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch("ai_core.llm_client.call_async", new=AsyncMock(return_value="LLM 응답")), \
+             patch("ai_core.tts.get_tts_cache", return_value=mock_tts_cache):
+            await vp._run_one_turn()
+
+        mock_am.play.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mic_error_is_broadcast(self, mock_stt, tts_lock):
+        """마이크 장치 오류는 조용히 삼키지 않고 대시보드에 알린다."""
+        mic = MagicMock()
+        mic.listen = AsyncMock(return_value=None)
+        mic.last_error = "Error querying device -1"
+        vp = VoicePipeline(mic=mic, stt=mock_stt, tts_lock=tts_lock)
+
+        with patch(BROADCAST_PATH, new=AsyncMock()) as mock_broadcast, \
+             patch("server.voice_pipeline.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            await vp._run_one_turn()
+
+        assert any(
+            call.args[0]["type"] == "error"
+            and "마이크 입력 오류" in call.args[0]["message"]
+            for call in mock_broadcast.await_args_list
+        )
+        mock_sleep.assert_awaited_once_with(1)
+
+    @pytest.mark.asyncio
+    async def test_reprompt_holds_lock_through_output_settle(self, mock_mic, mock_stt, tts_lock):
+        """되묻기 재생과 출력 꼬리 대기가 끝날 때까지 TTS 락을 유지한다."""
+        mock_am = MagicMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        vp = VoicePipeline(
+            mic=mock_mic,
+            stt=mock_stt,
+            tts_lock=tts_lock,
+            audio_manager=mock_am,
+            output_settle_sec=0.4,
+        )
+
+        async def assert_locked():
+            assert tts_lock.locked()
+
+        settle = AsyncMock(side_effect=assert_locked)
+        with patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch.object(vp, "_wait_for_output_settle", new=settle):
+            await vp._play_reprompt("retry_unclear.wav", "인식불가")
+
+        mock_am.wait.assert_awaited_once()
+        settle.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reprompt_cooldown_suppresses_immediate_repeat(self, mock_mic, mock_stt, tts_lock):
+        """스피커 에코가 다시 들어와도 같은 되묻기를 바로 반복하지 않는다."""
+        mock_am = MagicMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        vp = VoicePipeline(
+            mic=mock_mic,
+            stt=mock_stt,
+            tts_lock=tts_lock,
+            audio_manager=mock_am,
+            reprompt_cooldown_sec=2.0,
+        )
+
+        with patch(BROADCAST_PATH, new=AsyncMock()) as mock_broadcast:
+            await vp._play_reprompt("retry_unclear.wav", "인식불가")
+            await vp._play_reprompt("retry_unclear.wav", "인식불가")
+
+        mock_am.play.assert_called_once()
+        reprompts = [
+            call for call in mock_broadcast.await_args_list
+            if call.args[0]["type"] == "voice_reprompt"
+        ]
+        assert len(reprompts) == 1
 
     @pytest.mark.asyncio
     async def test_no_audio_skips_turn(self, mock_stt, tts_lock):

@@ -1,7 +1,7 @@
 """
 TTS 음성 출력 + 세션 기반 캐시 관리
-- Gemini TTS 사용 (음성: Aoede)
-- TTSCache: text -> wav 캐시 (세션 단위로 생성/삭제)
+- 공급자 우선순위: Gemini TTS → Edge-TTS → gTTS
+- TTSCache: text -> 파일 캐시 (세션 단위로 생성/삭제)
 - get_tts_cache(): 싱글톤 인스턴스 반환
 """
 
@@ -18,11 +18,39 @@ from google.genai import types
 from server.config import GEMINI_API_KEY
 from utils.latency_logger import log
 
-TTS_VOICE = "Aoede" # 시아 목소리
+TTS_VOICE = "Aoede"  # 시아 목소리
 TTS_MODEL = "gemini-2.5-flash-preview-tts"
+EDGE_TTS_VOICE = "ko-KR-SunHiNeural"  # 한국어 여성, 자연스러운 발음
 
 # Gemini 클라이언트 (모듈 로드 시 1회 생성)
 _genai_client = genai.Client(api_key=GEMINI_API_KEY)
+
+
+# ── Edge-TTS 헬퍼 ──────────────────────────────────────────────────────────
+async def _edge_tts_async(text: str, filepath: Path) -> bool:
+    """Edge-TTS로 mp3 생성. 성공 시 True."""
+    try:
+        import edge_tts  # noqa: PLC0415
+        communicate = edge_tts.Communicate(text, voice=EDGE_TTS_VOICE)
+        await communicate.save(str(filepath))
+        return filepath.exists() and filepath.stat().st_size > 0
+    except Exception as e:
+        print(f"[TTS] Edge-TTS 오류: {e}")
+        filepath.unlink(missing_ok=True)
+        return False
+
+
+# ── gTTS 헬퍼 (동기, to_thread로 래핑) ────────────────────────────────────
+def _gtts_sync(text: str, filepath: Path) -> bool:
+    """gTTS로 mp3 생성. 성공 시 True."""
+    try:
+        from gtts import gTTS  # noqa: PLC0415
+        gTTS(text=text, lang="ko", slow=False).save(str(filepath))
+        return filepath.exists() and filepath.stat().st_size > 0
+    except Exception as e:
+        print(f"[TTS] gTTS 오류: {e}")
+        filepath.unlink(missing_ok=True)
+        return False
 
 def _write_wav(filepath, pcm, channels=1, rate=24000, sample_width=2):
     """Gemini가 준 날것 소리 데이터(pcm)를 wav 파일로 포장"""
@@ -109,30 +137,48 @@ class TTSCache:
         return None
     
     async def _generate_and_cache(self, text: str) -> Path | None:
-        """Gemini로 TTS 생성 후 캐시에 저장"""
+        """TTS 생성 후 캐시에 저장.
+        공급자 우선순위: Gemini → Edge-TTS → gTTS
+        어느 하나라도 성공하면 해당 파일 경로 반환.
+        """
         if self._session_dir is None:
             print("[TTS] 세션 미시작, start_session() 먼저 호출 필요")
             return None
-        try:
-            log("tts_start")
-            key = self._hash(text)
+
+        log("tts_start")
+        key = self._hash(text)
+
+        # 1. Gemini TTS ───────────────────────────────────────────────────
+        pcm = await asyncio.to_thread(self._gemini_tts, text)
+        if pcm is not None:
             filepath = self._session_dir / f"{key}.wav"
-
-            # Gemini 호출은 동기 함수 / 블로킹 안 되게 별도 스레드에서 실행
-            pcm = await asyncio.to_thread(self._gemini_tts, text)
-            if pcm is None:
-                log("tts_fail")
-                return None
             _write_wav(filepath, pcm)
-
             self._index[key] = filepath
             log("tts_end")
-            print(f"[TTS] 생성 완료: {filepath.name}")
+            print(f"[TTS] Gemini 사용 → {filepath.name}")
             return filepath
-        except Exception as e:
-            log("tts_fail")
-            print(f"[TTS ERROR] {e}")
-            return None
+
+        # 2. Edge-TTS fallback ────────────────────────────────────────────
+        print("[TTS] Gemini 실패 → Edge-TTS 시도")
+        filepath = self._session_dir / f"{key}.mp3"
+        if await _edge_tts_async(text, filepath):
+            self._index[key] = filepath
+            log("tts_end")
+            print(f"[TTS] Gemini 실패 → Edge-TTS 사용 → {filepath.name}")
+            return filepath
+
+        # 3. gTTS fallback ────────────────────────────────────────────────
+        print("[TTS] Edge-TTS 실패 → gTTS 시도")
+        filepath = self._session_dir / f"{key}_gtts.mp3"
+        if await asyncio.to_thread(_gtts_sync, text, filepath):
+            self._index[key] = filepath
+            log("tts_end")
+            print(f"[TTS] Edge-TTS 실패 → gTTS 사용 → {filepath.name}")
+            return filepath
+
+        log("tts_fail")
+        print("[TTS ERROR] 모든 TTS 공급자 실패 (Gemini / Edge-TTS / gTTS)")
+        return None
 
     async def get_or_create(self, text: str) -> Path | None:
         """캐시 HIT -> 즉시 반환 / MISS -> TTS 생성 (비블로킹)"""

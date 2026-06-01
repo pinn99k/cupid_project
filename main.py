@@ -341,6 +341,8 @@ async def startup():
         silence_threshold=VAD_SILENCE_THRESHOLD,
         silence_duration=VAD_SILENCE_DURATION,
         max_duration=VAD_MAX_DURATION,
+        # TTS/narration 재생 중 골전도 이어폰 echo → silence_reset 방지
+        audio_playing_check=get_audio_manager().is_playing,
     )
     stt = STTClient(language=STT_LANGUAGE)
     voice_pipeline = VoicePipeline(

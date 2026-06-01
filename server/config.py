@@ -50,6 +50,24 @@ SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8000"))
 # 0 = 노트북 내장캠 (기본값), 1+ = 외장 USB 캠
 WEBCAM_INDEX: int = int(os.getenv("WEBCAM_INDEX", "0"))
 
+
+# 카메라 소스 (디바이스 연동)
+# int 문자열 = 로컬 웹캠 인덱스, "http..." = ESP32-CAM MJPEG URL
+def _parse_cam_source(value: str):
+    value = value.strip()
+    if value.lower().startswith("http"):
+        return value
+    return int(value)
+
+
+# 기본값은 기존 WEBCAM_INDEX와 동일 (디바이스 미연결 시 로컬 웹캠 유지)
+CAM_SOURCE = _parse_cam_source(os.getenv("CAM_SOURCE", str(WEBCAM_INDEX)))
+
+# 초음파 (디바이스 폴링)
+ULTRASONIC_URL: str = os.getenv("ULTRASONIC_URL", "")
+ULTRASONIC_POLL_SEC: float = float(os.getenv("ULTRASONIC_POLL_SEC", "0.3"))
+ULTRASONIC_OFFSET_CM: float = float(os.getenv("ULTRASONIC_OFFSET_CM", "0"))
+
 # 마이크 설정
 # None = 시스템 기본 마이크, 숫자 = 장치 인덱스
 MIC_DEVICE_INDEX = os.getenv("MIC_DEVICE_INDEX")

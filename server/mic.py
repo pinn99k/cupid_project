@@ -36,6 +36,8 @@ class MicCapture:
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
         self.max_duration = max_duration
+        # 직전 녹음의 평균 RMS(저음량 되묻기 판정용, Unit 4). 발화 없으면 0.0.
+        self.last_rms: float = 0.0
 
     # ------------------------------------------------------------------
     # 공개 비동기 인터페이스
@@ -73,8 +75,10 @@ class MicCapture:
         max_frames = int(self.max_duration * frames_per_sec)
 
         recorded: list[np.ndarray] = []
+        speech_rms: list[float] = []  # 발화 구간 RMS (평균 음량 계산용)
         speech_started = False
         silence_frames = 0
+        self.last_rms = 0.0
 
         try:
             with sd.InputStream(
@@ -95,6 +99,7 @@ class MicCapture:
                         speech_started = True
                         silence_frames = 0
                         recorded.append(chunk)
+                        speech_rms.append(rms)
                     else:
                         # 무음 구간
                         if speech_started:
@@ -113,6 +118,10 @@ class MicCapture:
 
         if not recorded:
             return None
+
+        # 발화 구간 평균 음량 기록 (저음량 되묻기 판정용)
+        if speech_rms:
+            self.last_rms = float(np.mean(speech_rms))
 
         audio_data = np.concatenate(recorded, axis=0)
         return self._to_wav_bytes(audio_data)

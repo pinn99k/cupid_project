@@ -51,7 +51,7 @@ class VoicePipeline:
         self._low_volume_rms = low_volume_rms
         self._running = False
         self._chat_history: list[dict] = []  # {"role": "user"|"assistant", "content": str}
-        self._max_history = 8  # 최근 4턴만 유지해 LLM 응답 지연 최소화
+        self._max_history = 4  # 최근 2턴만 유지해 LLM 응답 지연 최소화
         self._consecutive_fails = 0
         self._cooldown_steps = [2, 5, 10, 30]  # 초 단위 쿨다운 단계
 

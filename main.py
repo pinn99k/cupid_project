@@ -35,7 +35,8 @@ from server.websocket_handler import broadcast
 from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX,
                            MIC_DEVICE_INDEX, VAD_SILENCE_THRESHOLD,
                            VAD_SILENCE_DURATION, VAD_MAX_DURATION, STT_LANGUAGE,
-                           RELEVANCE_MIN_AREA, VAD_LOW_VOLUME_RMS)
+                           RELEVANCE_MIN_AREA, VAD_LOW_VOLUME_RMS,
+                           DETECTION_BROADCAST_INTERVAL, AI_LOOP_SLEEP_SEC)
 from server.mic import MicCapture
 from server.stt import STTClient
 from server.voice_pipeline import VoicePipeline
@@ -182,7 +183,7 @@ async def _ai_loop():
         now = time.time()
 
         # 음성 안내와 별도로 대시보드 탐지 상태는 실시간 갱신
-        if (now - last_detection_broadcast_time) >= 0.25:
+        if (now - last_detection_broadcast_time) >= DETECTION_BROADCAST_INTERVAL:
             last_detection_broadcast_time = now
             await broadcast({
                 "type": "detections_update",
@@ -244,7 +245,7 @@ async def _ai_loop():
         # 슬롯에 저장되어 "시아야 질문" 시 VQA가 근거로 사용한다.
         # (_handle_narration/_run_narration 함수는 수동 호출용으로 보존)
 
-        await asyncio.sleep(0.1)  # AI 루프는 ~10fps면 충분
+        await asyncio.sleep(AI_LOOP_SLEEP_SEC)
 
 
 async def _handle_narration(enriched, tts, audio, stage):

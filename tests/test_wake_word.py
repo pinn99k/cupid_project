@@ -17,9 +17,13 @@ class TestParseWakeWord:
         assert parse_wake_word("시아야") == ""
         assert parse_wake_word("시아야!") == ""
 
-    def test_strict_시아_alone_is_not_wake(self):
-        # 결정 A2: "시아"만으로는 호출 아님 ("시아야"만 인정)
-        assert parse_wake_word("시아 지금 가도 돼") is None
+    def test_stt_variants_are_wake(self):
+        assert parse_wake_word("시아 지금 가도 돼") == "지금 가도 돼"
+        assert parse_wake_word("시야 앞에 뭐 있어?") == "앞에 뭐 있어"
+        assert parse_wake_word("씨아야 오른쪽 맞아?") == "오른쪽 맞아"
+
+    def test_embedded_sia_is_not_wake(self):
+        assert parse_wake_word("러시아 이야기 해줘") is None
 
     def test_no_wake_returns_none(self):
         assert parse_wake_word("안녕하세요") is None

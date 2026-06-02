@@ -78,6 +78,17 @@ def get_scene() -> tuple[dict | None, float]:
         return copy.deepcopy(_latest_scene), _latest_scene_ts
 
 
+def clear_scene():
+    """장면 슬롯 초기화 — Stage 전환·세션 리셋 시 호출.
+    이전 Stage 2/3 의 YOLO 탐지 결과가 Stage 1 VQA 응답을 오염시키는 것을 방지."""
+    global _latest_scene, _latest_scene_ts
+    with _scene_lock:
+        if _latest_scene is not None:
+            print("[SCENE] 잔류 장면 초기화 (이전 탐지 결과 제거)")
+        _latest_scene = None
+        _latest_scene_ts = 0.0
+
+
 # ---------------------------------------------------------------------------
 # 서버 상태 관리
 # ---------------------------------------------------------------------------
@@ -143,6 +154,9 @@ def reset_session():
     app_state.current_stage = 1
     app_state.question_count = 0
     _cancel_narration()
+
+    # 장면 슬롯 초기화 — 이전 Stage 탐지 결과가 VQA 응답을 오염시키지 않도록
+    clear_scene()
 
     # Voice pipeline 히스토리 리셋
     if _voice_pipeline:

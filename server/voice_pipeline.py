@@ -18,6 +18,11 @@ _VISION_RE = re.compile(
     r"뭐.*있|있냐|있어|보여|보이|위험|사람|계단|앞|왼|오른|장애물|찾|감지|물체|뭐가|주변|근처"
 )
 
+# VQA 에서 허용하는 장면 최대 나이.
+# Stage 전환 후 _ai_loop 이 set_scene(None)으로 클리어하지만,
+# YOLO가 느릴 때 오래된 장면이 남아있는 경우를 이중으로 방어.
+_MAX_SCENE_AGE_MS: float = 5_000  # 5초
+
 # 되묻기 오디오 → 대화창 표시 텍스트 매핑
 _REPROMPT_TEXTS: dict[str, str] = {
     "retry_what.wav":    "응, 불렀어?",
@@ -111,6 +116,8 @@ class VoicePipeline:
         if self._audio_manager:
             await self._audio_manager.wait_until_idle()
 
+        _turn_start = time.perf_counter()  # 전체 턴 시작 시각
+
         # 1. 듣기
         await broadcast({"type": "voice_listening", "timestamp": int(time.time() * 1000)})
         audio_data = await self._mic.listen()
@@ -132,20 +139,20 @@ class VoicePipeline:
         self._cancel_narration()
 
         # 1-1. 저음량 되묻기 (Unit 4) — 들리긴 했으나 STT엔 너무 작은 경우.
-        # STT를 건너뛰고 즉답으로 "더 크게" 요청 (LLM 미사용 → 빠르고 안전).
         rms = getattr(self._mic, "last_rms", None)
         if self._low_volume_rms > 0 and isinstance(rms, (int, float)) and 0 < rms < self._low_volume_rms:
             print(f"[VoicePipeline] 저음량(RMS={rms:.0f}) → 되묻기")
             await self._play_reprompt("retry_louder.wav", "저음량")
             return
 
-        # 2. STT — broadcast "voice_processing"
+        # 2. STT
         await broadcast({"type": "voice_processing", "timestamp": int(time.time() * 1000)})
-        stt_started = time.perf_counter()
+        _stt_start = time.perf_counter()
         text = await self._stt.transcribe(audio_data)
-        print(f"[VoicePipeline] STT 완료: {time.perf_counter() - stt_started:.2f}초")
+        _stt_elapsed = time.perf_counter() - _stt_start
+        print(f"[TIMING] STT={_stt_elapsed:.2f}s")
+
         if not text or not text.strip():
-            # STT None: 진짜 못알아들음 vs 시스템 오류 구분
             status = getattr(self._stt, "last_status", "unrecognized")
             if status == "error":
                 print("[VoicePipeline] STT 시스템 오류 → 재청취")
@@ -155,38 +162,28 @@ class VoicePipeline:
                     "timestamp": int(time.time() * 1000),
                 })
                 return
-            # UnknownValueError(인식 불가): VAD 노이즈 오인 가능성이 높음.
-            # "미안해, 한 번만 더" 반복은 혼잣말처럼 들리므로 조용히 재청취.
-            # 호출어까지 STT로 확인된 경우에만 되묻기 수행(아래 wake_word 게이팅 참조).
             print("[VoicePipeline] 인식 불가(잡음 추정) → 조용히 재청취")
             return
 
         text = text.strip()
 
-        # 2-1. 호출어 게이팅 (결정 A2/A3)
-        #  - 호출어 "시아야" 없음(None) → 무시 (대시보드 broadcast도 안 함 = 잡음/에코 차단)
-        #  - 호출어만 있고 질문 없음("") → 되묻기 "응? 불렀어?" (Unit 4)
-        #  - 질문 있음 → 그 질문으로 진행
+        # 2-1. 호출어 게이팅
         from server.wake_word import parse_wake_word, WAKE_TOKENS
         query = parse_wake_word(text)
 
-        # 호출어 파싱 상세 로그 (#4 진단)
         _compact = "".join(text.split())
         _matched = next((t for t in WAKE_TOKENS if t in _compact), None)
-        print(
-            f"[VoicePipeline] STT 원문={text!r}"
-            f"  매칭토큰={_matched!r}"
-            f"  파싱질문={query!r}"
-        )
+        print(f"[STT OUTPUT]     {text!r}")
+        print(f"[VoicePipeline] 매칭토큰={_matched!r}  파싱질문={query!r}")
 
-        if query is None:  # 비호출 → 잡음으로 보고 조용히 무시
+        if query is None:
             return
-        if query == "":  # "시아야"만 부르고 질문 없음 → 되묻기
+        if query == "":
             await self._play_reprompt("retry_what.wav", "호출만")
             return
         text = query
+        print(f"[PARSED QUESTION] {text!r}")
 
-        # 사용자 질문을 대시보드에 표시 (호출어 제거된 질문)
         await broadcast({
             "type": "user_stt",
             "message": text,
@@ -194,12 +191,8 @@ class VoicePipeline:
         })
 
         # 3. LLM 호출
-        # ─ Vision 질문("앞에 뭐 있어" 등) → 무조건 VQA(YOLO 장면 근거)
-        # ─ 신선한 장면(2초 이내) + 일반 질문 → VQA
-        # ─ 그 외 일반 질문 → 일반 대화 (SYSTEM_PROMPT)
         from ai_core.llm_client import call_async, SYSTEM_PROMPT, VQA_PROMPT
 
-        # 3-0. Vision 질문 분류 + LLM 응답 캐시 (일반 질문만 캐시)
         is_vision_query = bool(_VISION_RE.search(text))
         cache_eligible = not is_vision_query
 
@@ -209,48 +202,58 @@ class VoicePipeline:
             if response:
                 print(f"[VoicePipeline] CACHE HIT: {text!r} → {response!r}")
 
+        _llm_elapsed = 0.0
         if response is None:
-            # 장면 데이터 조회 (VQA 여부 결정용)
             scene, scene_ts = (None, 0.0)
             if self._scene_provider:
                 scene, scene_ts = self._scene_provider()
             scene_age_ms = time.time() * 1000 - scene_ts
             fresh = scene is not None and scene_age_ms <= self._scene_fresh_ms
 
-            # VQA 모드 선택
+            # ── VQA 모드 선택 ────────────────────────────────────────────
+            # Vision 질문이더라도 장면이 _MAX_SCENE_AGE_MS(5초) 이상 오래된 경우
+            # "잘 안 보여"로 직접 응답 — Stage 전환 후 잔류 데이터 오염 방지.
             if is_vision_query:
-                if scene is not None:
-                    # 장면 있음 → 신선도 무관하게 VQA (가장 최근 인식 결과 사용)
+                scene_valid = (
+                    scene is not None
+                    and scene_age_ms <= _MAX_SCENE_AGE_MS
+                )
+                if scene_valid:
                     from ai_core.scene_text import scene_to_korean
                     scene_text = scene_to_korean(scene)
                     base_prompt = f"{VQA_PROMPT}\n\n[현재 장면] {scene_text}"
                     print(
                         f"[VoicePipeline] VQA 모드(Vision 질문, 장면 경과={scene_age_ms:.0f}ms)"
-                        f"  system={len(base_prompt)}자 user={len(text)}자 scene={len(scene_text)}자: {scene_text[:80]!r}"
+                        f"  system={len(base_prompt)}자 user={len(text)}자"
+                        f" scene={len(scene_text)}자: {scene_text[:80]!r}"
                     )
                 else:
-                    # 장면 데이터 자체가 없음(카메라 미연결 등) → LLM 없이 직접 응답
+                    age_str = f"{scene_age_ms:.0f}ms" if scene is not None else "없음"
+                    print(
+                        f"[VoicePipeline] Vision 질문 + 장면 없음/만료"
+                        f"(경과={age_str}, 한계={_MAX_SCENE_AGE_MS:.0f}ms) → 직접 응답"
+                    )
                     response = "지금은 화면에서 잘 안 보여. 잠깐 기다려 볼까?"
-                    print("[VoicePipeline] Vision 질문 + 장면 없음 → 직접 응답")
             elif fresh:
                 from ai_core.scene_text import scene_to_korean
                 scene_text = scene_to_korean(scene)
                 base_prompt = f"{VQA_PROMPT}\n\n[현재 장면] {scene_text}"
                 print(
                     f"[VoicePipeline] VQA 모드(신선한 장면, 경과={scene_age_ms:.0f}ms)"
-                    f"  system={len(base_prompt)}자 user={len(text)}자 scene={len(scene_text)}자: {scene_text[:80]!r}"
+                    f"  system={len(base_prompt)}자 user={len(text)}자"
+                    f" scene={len(scene_text)}자: {scene_text[:80]!r}"
                 )
             else:
                 base_prompt = SYSTEM_PROMPT
                 print("[VoicePipeline] 일반 대화 모드")
 
-            # LLM 호출 (직접 응답 경로는 이미 response가 설정됨)
             if response is None:
                 context = self._build_context(base_prompt)
                 try:
-                    llm_started = time.perf_counter()
+                    _llm_start = time.perf_counter()
                     response = await call_async(context, text)
-                    print(f"[VoicePipeline] LLM 완료: {time.perf_counter() - llm_started:.2f}초")
+                    _llm_elapsed = time.perf_counter() - _llm_start
+                    print(f"[TIMING] LLM={_llm_elapsed:.2f}s")
                     print(f"[VoicePipeline] LLM 응답: {response}")
                 except Exception as e:
                     print(f"[VoicePipeline] LLM 에러: {e}")
@@ -264,41 +267,76 @@ class VoicePipeline:
                     await self._cooldown_on_fail()
                     return
 
-        # LLM 성공 — 연속 실패 카운터 리셋 + 질문 카운트 증가(단일 writer)
         self._consecutive_fails = 0
         if self._count_question:
             self._count_question()
 
-        # 응답 캐시 저장 (장면 비의존 질문만)
         if cache_eligible:
             self._store_response_cache(text, response)
 
-        # 히스토리 저장
         self._chat_history.append({"role": "user", "content": text})
         self._chat_history.append({"role": "assistant", "content": response})
-        # 최대 길이 초과 시 오래된 것부터 제거
         if len(self._chat_history) > self._max_history:
             self._chat_history = self._chat_history[-self._max_history:]
 
-        # ── 응답 4단계 추적 (#5 잘림 진단) ─────────────────────────────
-        # [LLM RAW]  : llm_client.py에서 출력 (API 원본)
-        # [LLM FINAL]: llm_client.py에서 출력 (_strip_emoji 후)
-        # [BROADCAST]: 아래 — WebSocket으로 전송되는 텍스트
-        # [TTS INPUT]: _speak() 호출 직전 — TTS에 전달되는 텍스트
+        # ── 텍스트 → 브라우저 즉시 전송 (음성보다 먼저 표시됨) ──────────
         print(f"[PIPELINE BROADCAST] {response!r}")
         await broadcast({
             "type": "stt_response",
             "message": response,
             "timestamp": int(time.time() * 1000),
         })
+        _text_delay = time.perf_counter() - _turn_start
+        print(f"[TIMING] 텍스트 표시까지={_text_delay:.2f}s (STT+LLM)")
 
-        # 4. TTS 재생 (Lock으로 narration/danger와 경합 방지)
+        # ── TTS 생성: lock 밖에서 먼저 실행 (병목 핵심 수정) ───────────
+        # 이전 코드: lock 안에서 TTS 생성 → 텍스트 표시 직후 1~3초 대기
+        # 수정 후:   lock 밖에서 TTS 생성 → 재생만 lock 안에서 직렬화
+        # 효과: lock 경합(danger 오디오 재생 중 등)이 있을 때 TTS 생성이 병렬 실행
         print(f"[PIPELINE TTS INPUT] {response!r}")
+        from ai_core.tts import get_tts_cache
+        _tts_start = time.perf_counter()
+        tts_filepath = await get_tts_cache().get_or_create(response)
+        _tts_elapsed = time.perf_counter() - _tts_start
+        _is_cache = _tts_elapsed < 0.05  # 50ms 이하면 캐시 HIT로 판정
+        print(
+            f"[TIMING] TTS={'캐시' if _is_cache else '생성'}={_tts_elapsed:.2f}s"
+            f" → 오디오 시작까지={time.perf_counter() - _turn_start:.2f}s"
+        )
+
+        # ── 재생만 lock 안에서 (narration/danger와 경합 방지) ──────────
         async with self._tts_lock:
-            await self._speak(response)
+            await self._play_tts_file(tts_filepath)
+
+        _total = time.perf_counter() - _turn_start
+        print(
+            f"[TIMING 요약]"
+            f" STT={_stt_elapsed:.2f}s"
+            f" LLM={_llm_elapsed:.2f}s"
+            f" TTS={'캐시' if _is_cache else '생성'}({_tts_elapsed:.2f}s)"
+            f" | 텍스트={_text_delay:.2f}s 총={_total:.2f}s"
+        )
+
+    async def _play_tts_file(self, filepath):
+        """이미 생성된 TTS 파일을 재생. tts_start/tts_done broadcast."""
+        try:
+            from ai_core.audio_manager import get_audio_manager
+            await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
+            if filepath:
+                am = self._audio_manager or get_audio_manager()
+                _play_start = time.perf_counter()
+                request = am.play_path(str(filepath), priority=PRIORITY_CONVERSATION)
+                await am.wait(request)
+                print(f"[TIMING] 재생={time.perf_counter() - _play_start:.2f}s")
+                await self._wait_for_output_settle()
+            await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+        except Exception as e:
+            print(f"[VoicePipeline] TTS 재생 오류: {e}")
+            await broadcast({"type": "error", "message": f"TTS 오류: {type(e).__name__}", "timestamp": int(time.time() * 1000)})
+            await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
 
     async def _speak(self, text: str):
-        """TTS 생성 + 오디오 재생. tts_start/tts_done broadcast."""
+        """TTS 생성 + 오디오 재생 (reprompt 경로용 — _play_tts_file 직접 호출 불가 시 사용)."""
         try:
             from ai_core.tts import get_tts_cache
             from ai_core.audio_manager import get_audio_manager

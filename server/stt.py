@@ -60,7 +60,20 @@ class STTClient:
         try:
             buf = io.BytesIO(wav_bytes)
             with sr.AudioFile(buf) as source:
+                # STT INPUT 진단: 전달되는 오디오 길이 확인
+                # (MicCapture 에서 잘린 경우 여기서 짧게 찍힘)
                 audio = self._recognizer.record(source)
+
+            # WAV 헤더(44byte) 제외한 오디오 데이터 크기로 실제 길이 계산
+            # int16(2byte), 16kHz, mono
+            audio_bytes = len(wav_bytes) - 44
+            audio_sec = max(0.0, audio_bytes / (16000 * 2))
+            print(
+                f"[STT INPUT]"
+                f" duration={audio_sec:.2f}s"
+                f" bytes={len(wav_bytes)}"
+                f" audio_bytes={audio_bytes}"
+            )
 
             text = self._recognizer.recognize_google(audio, language=self._language)
             if text and text.strip():

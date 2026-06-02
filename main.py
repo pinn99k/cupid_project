@@ -23,6 +23,7 @@ from ai_core.narration import narrate_async
 from ai_core.tts import get_tts_cache
 from server.main_server import (
     app,
+    clear_scene,
     get_frame,
     get_scene,
     increment_question_count,
@@ -162,6 +163,9 @@ async def _ai_loop():
     while True:
         # Stage 1은 대화 전용 — AI 분석 불필요
         if srv.app_state.current_stage == 1:
+            # 이전 Stage 2/3 의 잔류 장면이 VQA 응답을 오염시키지 않도록 즉시 클리어.
+            # _latest_scene 이 None 이 되면 voice_pipeline 은 "잘 안 보여"로 직접 응답.
+            clear_scene()
             await asyncio.sleep(0.5)
             continue
 

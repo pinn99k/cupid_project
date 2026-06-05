@@ -7,7 +7,7 @@
 #ifndef SIA_SECRETS_H
 #define SIA_SECRETS_H
 
-#define SIA_WIFI_SSID "your-wifi-ssid"
-#define SIA_WIFI_PASS "your-wifi-password"
+#define SIA_WIFI_SSID "YOUR_WIFI_SSID"
+#define SIA_WIFI_PASS "YOUR_WIFI_PASSWORD"
 
 #endif  // SIA_SECRETS_H

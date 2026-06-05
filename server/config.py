@@ -80,6 +80,23 @@ def _parse_cam_source(value: str):
 # 기본값은 기존 WEBCAM_INDEX와 동일 (디바이스 미연결 시 로컬 웹캠 유지)
 CAM_SOURCE = _parse_cam_source(os.getenv("CAM_SOURCE", str(WEBCAM_INDEX)))
 
+# 카메라 영상 회전 (ESP32-CAM 부착 방향 보정)
+# 0   = 회전 안 함 (기본값 — 끄면 변경 전과 100% 동일)
+# 90  = 시계 방향(CW), 180 = 뒤집기, 270 = 반시계 방향(CCW)
+# 회전은 cap.read() 직후 한 곳에서만 적용 → YOLO/bbox/거리추정 모두 회전 기준으로 일관.
+def _parse_rotation(value: str) -> int:
+    try:
+        deg = int(value.strip())
+    except (ValueError, AttributeError):
+        deg = 0
+    if deg not in (0, 90, 180, 270):
+        print(f"[config] 경고: CAMERA_ROTATION={value!r} 은 0/90/180/270 만 허용 → 0 사용")
+        return 0
+    return deg
+
+
+CAMERA_ROTATION: int = _parse_rotation(os.getenv("CAMERA_ROTATION", "0"))
+
 # 초음파 (디바이스 폴링)
 ULTRASONIC_URL: str = os.getenv("ULTRASONIC_URL", "")
 ULTRASONIC_POLL_SEC: float = float(os.getenv("ULTRASONIC_POLL_SEC", "0.3"))

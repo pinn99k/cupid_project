@@ -1,10 +1,14 @@
 """지연 측정 유틸. 스레드 안전, 히스토리 보관, 파일 출력 지원."""
 
+import os
 import time
 import json
 import threading
 from pathlib import Path
 from dataclasses import dataclass
+
+# 핫루프 print 스팸 방지: 기본 꺼짐. SIA_DEBUG로 켬. 집계/저장은 플래그와 무관하게 항상 동작.
+_ENV_VERBOSE = os.getenv("SIA_DEBUG", "").lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -20,21 +24,47 @@ class MeasurementStats:
 class LatencyLogger:
     """스레드 안전한 지연 측정 로거."""
 
-    def __init__(self, max_history: int = 100, log_dir: str | None = None):
+    def __init__(self, max_history: int = 100, log_dir: str | None = None,
+                 verbose: bool | None = None):
         self._lock = threading.Lock()
         self._timestamps: dict[str, float] = {}
         self._history: dict[str, list[float]] = {}  # label -> list of elapsed ms
         self._max_history = max_history
+        self._verbose = _ENV_VERBOSE if verbose is None else verbose
         self._log_dir = Path(log_dir) if log_dir else None
         if self._log_dir:
             self._log_dir.mkdir(parents=True, exist_ok=True)
+
+    def set_verbose(self, verbose: bool):
+        """print 노출 여부 토글 (집계/저장엔 영향 없음)."""
+        self._verbose = verbose
+
+    def set_log_dir(self, log_dir: str):
+        """저장 디렉토리 설정 (save_to_file 활성화)."""
+        self._log_dir = Path(log_dir)
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+
+    def _append(self, key: str, value_ms: float):
+        """히스토리에 측정값 누적 (최근 max_history개 유지). 락 안에서 호출 가정."""
+        hist = self._history.setdefault(key, [])
+        hist.append(value_ms)
+        if len(hist) > self._max_history:
+            hist.pop(0)
+
+    def record(self, key: str, value_ms: float):
+        """이미 측정된 구간 시간(ms)을 직접 집계 (perf_counter 등 외부 측정용)."""
+        with self._lock:
+            self._append(key, value_ms)
+        if self._verbose:
+            print(f"[LATENCY] {key}: {value_ms:.0f}ms")
 
     def log(self, label: str) -> float:
         """타임스탬프 기록. 밀리초 반환."""
         ts = time.time() * 1000
         with self._lock:
             self._timestamps[label] = ts
-        print(f"[LATENCY] {label}: {ts:.0f}ms")
+        if self._verbose:
+            print(f"[LATENCY] {label}: {ts:.0f}ms")
         return ts
 
     def elapsed(self, start_label: str, end_label: str) -> float | None:
@@ -47,13 +77,9 @@ class LatencyLogger:
         diff = e - s
         key = f"{start_label}->{end_label}"
         with self._lock:
-            if key not in self._history:
-                self._history[key] = []
-            hist = self._history[key]
-            hist.append(diff)
-            if len(hist) > self._max_history:
-                hist.pop(0)
-        print(f"[LATENCY] {start_label} -> {end_label}: {diff:.0f}ms")
+            self._append(key, diff)
+        if self._verbose:
+            print(f"[LATENCY] {start_label} -> {end_label}: {diff:.0f}ms")
         return diff
 
     def stats(self, key: str | None = None) -> dict[str, MeasurementStats]:
@@ -113,6 +139,19 @@ def log(label: str) -> float:
 def elapsed(start_label: str, end_label: str) -> float | None:
     """두 라벨 간 경과 시간(ms) 계산 + 출력. (하위 호환 함수)"""
     return _default.elapsed(start_label, end_label)
+
+
+def record(key: str, value_ms: float):
+    """외부 측정값(ms)을 기본 로거에 집계. (하위 호환 함수)"""
+    _default.record(key, value_ms)
+
+
+def configure(log_dir: str | None = None, verbose: bool | None = None):
+    """기본 로거 설정: 저장 디렉토리/print 노출. (앱 시작 시 1회)"""
+    if log_dir is not None:
+        _default.set_log_dir(log_dir)
+    if verbose is not None:
+        _default.set_verbose(verbose)
 
 
 def get_logger() -> LatencyLogger:

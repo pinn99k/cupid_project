@@ -38,3 +38,6 @@ Thumbs.db
 
 # 로그 파일
 *.log
+
+# Phase 0 측정 출력
+logs/

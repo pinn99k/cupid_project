@@ -63,6 +63,12 @@ DANGER_DISTANCE_CM: float = float(os.getenv("DANGER_DISTANCE_CM", "30"))
 SERVER_HOST: str = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8000"))
 
+# 디버그/계측 (Phase 0 측정)
+# SIA_DEBUG=1 이면 핫루프 latency print 노출. 기본 꺼짐(스팸 방지). 집계는 항상 수행.
+SIA_DEBUG: bool = os.getenv("SIA_DEBUG", "").lower() in ("1", "true", "yes", "on")
+# 종료 시 latency_log.json 저장 위치.
+LATENCY_LOG_DIR: str = os.getenv("LATENCY_LOG_DIR", "logs")
+
 # 카메라 설정
 # 0 = 노트북 내장캠 (기본값), 1+ = 외장 USB 캠
 WEBCAM_INDEX: int = int(os.getenv("WEBCAM_INDEX", "0"))

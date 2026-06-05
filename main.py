@@ -47,11 +47,11 @@ from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX, CAM_SOURCE,
                            VOICE_OUTPUT_SETTLE_SEC, VOICE_REPROMPT_COOLDOWN_SEC,
                            ULTRASONIC_URL, ULTRASONIC_POLL_SEC, ULTRASONIC_OFFSET_CM,
                            ULTRASONIC_TIMEOUT_SEC, ULTRASONIC_STALE_SEC,
-                           ULTRASONIC_BUFFER_N)
+                           ULTRASONIC_BUFFER_N, SIA_DEBUG, LATENCY_LOG_DIR)
 from server.mic import MicCapture
 from server.stt import STTClient
 from server.voice_pipeline import VoicePipeline
-from utils.latency_logger import log, elapsed
+from utils.latency_logger import log, elapsed, configure as configure_latency, get_logger
 
 # ---------------------------------------------------------------------------
 # 상수
@@ -358,6 +358,7 @@ async def _ai_loop():
         enriched = enrich(dets, w, h, ultrasonic_cm=_get_distance(),
                           min_relevant_area=RELEVANCE_MIN_AREA)
         log("detect_end")
+        elapsed("detect_start", "detect_end")  # YOLO 추론시간 집계(P1 측정)
 
         # 최신 장면을 공유 슬롯에 저장 — "시아야 질문" 시 VQA가 읽음 (Unit 3)
         # YOLO를 음성 경로에서 또 돌리지 않기 위함 (shared_resources.md §6)
@@ -508,6 +509,8 @@ async def _run_narration(enriched, tts, audio, stage):
 async def startup():
     global _frame_task, _ai_task, _voice_task, _ultrasonic_task, voice_pipeline
     print("[SIA] 초기화 시작...")
+    # Phase 0 계측: print 게이팅(SIA_DEBUG) + latency_log.json 저장 위치 설정
+    configure_latency(log_dir=LATENCY_LOG_DIR, verbose=SIA_DEBUG)
     load_model()
     llm_init()
     tts = get_tts_cache()
@@ -567,6 +570,11 @@ async def shutdown():
         tts.end_session()
     except Exception as e:
         print(f"[SIA] TTS 세션 종료 오류: {e}")
+    # Phase 0: 측정 통계를 latency_log.json 으로 저장 (병목 분석용)
+    try:
+        get_logger().save_to_file("latency_log.json")
+    except Exception as e:
+        print(f"[SIA] latency 저장 오류: {e}")
     print("[SIA] 서버 종료 완료.")
 
 

@@ -10,6 +10,7 @@ from ai_core.audio_manager import PRIORITY_CONVERSATION, PRIORITY_FALLBACK
 from server.mic import MicCapture
 from server.stt import STTClient
 from server.websocket_handler import broadcast
+from utils.latency_logger import record as _rec
 
 # Vision 질문 분류기: 객체 인식 결과가 필요한 질문 패턴
 # 이 패턴에 해당하면 → LLM 캐시 제외 + 무조건 VQA(YOLO 장면) 모드로 처리
@@ -150,6 +151,7 @@ class VoicePipeline:
         _stt_start = time.perf_counter()
         text = await self._stt.transcribe(audio_data)
         _stt_elapsed = time.perf_counter() - _stt_start
+        _rec("stt_ms", _stt_elapsed * 1000)
         print(f"[TIMING] STT={_stt_elapsed:.2f}s")
 
         if not text or not text.strip():
@@ -253,6 +255,7 @@ class VoicePipeline:
                     _llm_start = time.perf_counter()
                     response = await call_async(context, text)
                     _llm_elapsed = time.perf_counter() - _llm_start
+                    _rec("llm_ms", _llm_elapsed * 1000)
                     print(f"[TIMING] LLM={_llm_elapsed:.2f}s")
                     print(f"[VoicePipeline] LLM 응답: {response}")
                 except Exception as e:
@@ -299,6 +302,7 @@ class VoicePipeline:
         tts_filepath = await get_tts_cache().get_or_create(response)
         _tts_elapsed = time.perf_counter() - _tts_start
         _is_cache = _tts_elapsed < 0.05  # 50ms 이하면 캐시 HIT로 판정
+        _rec("tts_cache_ms" if _is_cache else "tts_gen_ms", _tts_elapsed * 1000)
         print(
             f"[TIMING] TTS={'캐시' if _is_cache else '생성'}={_tts_elapsed:.2f}s"
             f" → 오디오 시작까지={time.perf_counter() - _turn_start:.2f}s"
@@ -309,6 +313,8 @@ class VoicePipeline:
             await self._play_tts_file(tts_filepath)
 
         _total = time.perf_counter() - _turn_start
+        _rec("text_delay_ms", _text_delay * 1000)
+        _rec("turn_total_ms", _total * 1000)
         print(
             f"[TIMING 요약]"
             f" STT={_stt_elapsed:.2f}s"

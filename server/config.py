@@ -98,9 +98,16 @@ def _parse_rotation(value: str) -> int:
 CAMERA_ROTATION: int = _parse_rotation(os.getenv("CAMERA_ROTATION", "0"))
 
 # 초음파 (디바이스 폴링)
+# URL 이 비면 폴링 비활성 → ultrasonic_cm None (디바이스 미연결 시 현행과 동일).
 ULTRASONIC_URL: str = os.getenv("ULTRASONIC_URL", "")
 ULTRASONIC_POLL_SEC: float = float(os.getenv("ULTRASONIC_POLL_SEC", "0.3"))
 ULTRASONIC_OFFSET_CM: float = float(os.getenv("ULTRASONIC_OFFSET_CM", "0"))
+# 요청 타임아웃 — 무선이 죽어도 루프가 매달리지 않게 짧게.
+ULTRASONIC_TIMEOUT_SEC: float = float(os.getenv("ULTRASONIC_TIMEOUT_SEC", "0.5"))
+# 마지막 정상 응답 후 이 시간을 넘으면 거리→None (끊김 시 오래된 값으로 오경보 방지).
+ULTRASONIC_STALE_SEC: float = float(os.getenv("ULTRASONIC_STALE_SEC", "1.5"))
+# 중앙값 필터 윈도우(최근 N개 날것 측정).
+ULTRASONIC_BUFFER_N: int = int(os.getenv("ULTRASONIC_BUFFER_N", "5"))
 
 # 마이크 설정
 # None = 시스템 기본 마이크, 숫자 = 장치 인덱스

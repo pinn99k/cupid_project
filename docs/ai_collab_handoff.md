@@ -1,73 +1,97 @@
-# AI ↔ 풀스택 협업 분담 (2단계 데모 로직 변경)
+# AI ↔ 풀스택 협업 가이드 (기능별 브랜치 + PR)
 
-> 목적: 같은 레포에서 **AI와 사람(풀스택)이 충돌 없이 병렬 작업**하도록 소유권·계약·할일을 고정한다.
-> 작업 단위: "수용/방향 2단계 데모" 로직 변경 (위험단계 시연 제외).
-> 이 문서를 AI 세션에 그대로 붙여 작업을 맡길 수 있다.
-
----
-
-## 1. 소유권 경계 (레인 — 서로의 레인 파일은 수정 금지)
-
-| 레인 | 폴더/파일 | 역할 |
-|------|-----------|------|
-| 🤖 **AI** | `main.py`, `server/`, `ai_core/`, `tests/`, `firmware/`, `tools/`, `docs/` | Python 백엔드 · 펌웨어 · 테스트 · 문서. 서버 로직/상태/이벤트 처리. |
-| 🧑 **풀스택(나)** | `dashboard/` (React 전체) + 디자인 산출물 | 프론트엔드 UI · 라우팅 · 디자인. 모바일 부모웹 디자인(`docs/parent_web_design_prompt.md`)도 사람 레인. |
-
-**규칙**
-- 상대 레인 파일은 **읽기만**. 수정은 소유자만.
-- 공유 접점은 아래 **WebSocket 계약**뿐. 계약을 바꿔야 하면 먼저 합의 → 이 문서/`docs/interface_contract.md` 갱신 후 양쪽 동시 반영.
-- 각자 자기 레인은 **자기 테스트로 검증**(AI=pytest, 사람=브라우저 수동/필요시 프론트 테스트).
+> 목적: 같은 레포에서 **여러 사람(풀스택·AI·팀원)이 백엔드/프론트를 동시에** 만져도 충돌이 격리되도록 워크플로우를 고정한다.
+> 결정: **폴더 소유권 잠금 아님.** 누구나 어떤 파일이든 고칠 수 있고, **충돌은 "기능별 브랜치 + PR"로 격리**한다.
 
 ---
 
-## 2. WebSocket 계약 (양쪽이 반드시 지킴)
+## 1. 협업 모델 — 기능별 브랜치 + PR
+
+깃엔 파일 주인이 없다. 충돌은 **같은 줄을 동시에** 고칠 때만 난다. 그래서 각자 **자기 브랜치**에서 작업하고 **PR로 합친다.**
+
+### 흐름
+```bash
+# 1) 항상 최신 main에서 분기
+git checkout main && git pull --rebase origin main
+git checkout -b feat/fe-start-reset
+
+# 2) 작게 자주 커밋
+git add <files> && git commit -m "..."
+
+# 3) 브랜치 푸시 → 출력에 뜨는 "Create a pull request" 링크 클릭
+git push -u origin feat/fe-start-reset
+#   (gh CLI 미설치 → 웹 링크로 PR 생성. 저장소 PR 탭에서도 가능)
+
+# 4) PR 리뷰 → squash 머지 → 브랜치 삭제 → 모두 main 당기기
+git checkout main && git pull --rebase origin main
+```
+
+### 브랜치 네이밍
+| 접두 | 용도 | 예 |
+|------|------|----|
+| `feat/be-*` | 백엔드 기능 | `feat/be-stage-voice` |
+| `feat/fe-*` | 프론트 기능 | `feat/fe-start-reset` |
+| `design/*` | 디자인 | `design/mobile-parent-web` |
+| `fix/*` · `test/*` · `docs/*` | 버그·테스트·문서 | `fix/be-ws-timeout` |
+
+### 꼬임 방지 규칙 (이게 전부)
+- **작게, 자주 PR.** 브랜치를 며칠 묵히면 main과 벌어져 충돌↑.
+- **분기 전 `git pull --rebase`**, 머지 후 모두 즉시 main 당기기.
+- 같은 함수를 굳이 둘이 동시에 고쳐야 하면 한마디로 조율(브랜치로도 그건 충돌).
+- 생성물·비밀파일 커밋 금지(`.theia/`, `sia_secrets.h`, `tools/demo_*` 등).
+
+### 폴더 가이드 (느슨 — 잠금 아님, "주로 누가" 참고용)
+| 주로 | 폴더 |
+|------|------|
+| 🧑 풀스택 | `dashboard/`(React·디자인) + 백엔드도 필요 시 |
+| 🤖 AI | `server/`·`main.py`·`ai_core/`·`tests/`·`firmware/`·`docs/` |
+> 백엔드는 둘 다 만질 수 있다. **브랜치로 격리**하면 누가 어디를 고치든 안전.
+
+---
+
+## 2. WebSocket 계약 (브랜치 무관 — 통합 접점, 함부로 못 바꿈)
 
 **대시보드 → 서버**
-| 이벤트 | 의미 | 서버 동작(불변식) |
-|--------|------|-------------------|
+| 이벤트 | 의미 | 서버 불변식 |
+|--------|------|-------------|
 | `{event:"new_session"}` | 깨끗한 재시작 | stage=1, learning off, scene clear, voice reset, TTS 새 세션 |
-| `{event:"start_learning", stage:1}` | 수용단계 진입 | 캠만. **voice 인식 OFF** |
-| `{event:"start_learning", stage:2}` | 방향단계 진입 | YOLO 실시간 + **voice ON**("시아야" 응답) |
-| `{event:"start_learning", stage:3}` | (사용 안 함) | 대시보드가 **보내지 않음**(버튼 비활성). 서버 코드는 보존 |
+| `{event:"start_learning", stage:1}` | 수용단계 | 캠만. **voice 인식 OFF** |
+| `{event:"start_learning", stage:2}` | 방향단계 | YOLO 실시간 + **voice ON**("시아야") |
+| `{event:"start_learning", stage:3}` | (미사용) | 대시보드가 **안 보냄**(버튼 비활성). 서버 코드 보존 |
 | `{event:"stop_learning"}` | 정지 | reset_session |
-| `{event:"fallback", audio_file}` | 수동 TTS 재생 | 스테이지 무관, 즉시 재생 |
-| `{stt_text:"..."}` | 음성 인식 텍스트 | narrate/VQA |
+| `{event:"fallback", audio_file}` | 수동 TTS | 스테이지 무관 즉시 재생 |
+| `{stt_text:"..."}` | 음성 텍스트 | narrate/VQA |
 
-**서버 → 대시보드**: `init_state`/`ack`, `detections_update{objects[].bbox}`, `narration`/`stt_response`/`user_stt`/`error`, `tts_start`/`tts_done`, `voice_listening`/`voice_processing`, `danger`(stage3 전용 — 현재 미사용).
+**서버 → 대시보드**: `init_state`/`ack`, `detections_update{objects[].bbox}`, `narration`/`stt_response`/`user_stt`/`error`, `tts_start`/`tts_done`, `voice_listening`/`voice_processing`, `danger`(stage3 전용·현재 미사용).
 
-> 핵심 불변식: **stage 1 = 음성 OFF / stage 2 = 음성 ON**은 **서버가 강제**한다(프론트가 실수로 보내도 서버가 보정).
-
----
-
-## 3. 이번 작업 분담 (확정된 계획)
-
-### 🤖 AI 레인
-- **변경 2 — 수용단계 음성 OFF**: `server/main_server.py` `handle_dashboard_message`의 `start_learning`
-  - `stage>=2` → `_voice_pipeline.start()`, `stage==1` → `_voice_pipeline.stop_listening()`
-  - 단위테스트: stage=1→stop_listening / stage=2→start 호출(가짜 pipeline)
-- 검증: pytest 통과 + 회귀 없음.
-
-### 🧑 풀스택 레인
-- **변경 1 — 시작하기 → 깨끗한 재시작**: `dashboard/src/App.jsx`
-  - `onStart` = `() => { send({event:'new_session'}); setStage(1); setPage('dashboard'); }`
-- **변경 3 — 위험단계 버튼 비활성**: `dashboard/src/components/ControlBar.jsx`
-  - stage 3 버튼은 렌더하되 `onClick` 무동작(`n !== 3 && onStageChange(n)`), 흐리게 표시(옵션)
-- (이후) 모바일 부모웹 디자인: `docs/parent_web_design_prompt.md` 기준.
-
-### 이미 동작 — 둘 다 손대지 않음(검증만)
-- 수용(1) YOLO 미실행 + 캠 스트림 ✓ (`_ai_loop`)
-- 방향(2) YOLO 실시간 + scene 저장 → "시아야" VQA ✓
+> 계약을 바꿔야 하면 **PR 설명에 명시 + 이 문서/`docs/interface_contract.md` 동시 갱신**.
 
 ---
 
-## 4. 통합 검증 시나리오 (양쪽 합류 후 수동)
+## 3. 이번 작업 분담 (각자 브랜치 → PR)
+
+| 담당 | 변경 | 브랜치 | 상태 |
+|------|------|--------|------|
+| 🤖 AI | **변경 2** 수용 음성 OFF (`server/main_server.py`) | (이미 main 직푸시됨 — 브랜치 도입 전) | ✅ 완료·머지됨 |
+| 🧑 풀스택 | **변경 1** 시작하기→`new_session` (`dashboard/src/App.jsx`) | `feat/fe-start-reset` | ⬜ |
+| 🧑 풀스택 | **변경 3** 위험단계 버튼 비활성 (`ControlBar.jsx`) | `feat/fe-hide-stage3` | ⬜ |
+| 🧑 풀스택 | 모바일 부모웹 디자인 (`docs/parent_web_design_prompt.md` 기준) | `design/mobile-parent-web` | ⬜ |
+
+### 변경 1·3 구현 메모
+- 변경 1: `onStart = () => { send({event:'new_session'}); setStage(1); setPage('dashboard'); }`
+- 변경 3: stage 3 버튼은 렌더하되 `onClick`을 `n !== 3 && onStageChange(n)`로(무동작), 흐리게 표시 옵션.
+
+---
+
+## 4. 통합 검증 시나리오 (합류 후 수동)
 1. 새로고침 → StartPage → **시작하기** → 서버 stage=1·새 세션 ack
-2. 수용단계: 캠만 실시간, **"시아야" 무반응**, 폴백 TTS 버튼은 재생됨
-3. 운영자가 **방향단계로 전환** → YOLO 박스 표시 + **"시아야" 질문 → 응답**
+2. 수용단계: 캠만 실시간, **"시아야" 무반응**, 폴백 TTS 버튼은 재생
+3. 운영자 **방향단계 전환** → YOLO 박스 + **"시아야" → 응답**
 4. **위험단계 버튼 클릭 → 무반응**
 
 ---
 
-## 5. 현재 상태 (작업 시작 시점)
-- 브랜치 `main`. 초음파 폴링(#1)·신규 테스트는 **AI 레인에서 완료·푸시됨**(게이팅이라 시연 영향 0).
-- ⚠️ 기존 회귀: `tests/test_phase2_main.py` 5개 깨짐(팀원 `_open_camera` 리네임) — 팀원 트랙에서 수리 중.
+## 5. 현재 상태
+- 브랜치 `main` 최신. 초음파 폴링·단계 음성 게이팅·신규 테스트 머지됨.
+- 이 문서부터 **새 작업은 브랜치+PR**로.
+- ⚠️ 기존 회귀: `tests/test_phase2_main.py` 5개 깨짐(팀원 `_open_camera` 리네임) — 별도 `fix/*` 브랜치로 수리 권장.

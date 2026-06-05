@@ -7,7 +7,7 @@
 #ifndef SIA_SECRETS_H
 #define SIA_SECRETS_H
 
-#define SIA_WIFI_SSID "your-wifi-ssid"
-#define SIA_WIFI_PASS "your-wifi-password"
+#define SIA_WIFI_SSID "은민님의 뜨거운 지점"
+#define SIA_WIFI_PASS "11111111@"
 
 #endif  // SIA_SECRETS_H

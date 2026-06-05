@@ -7,6 +7,7 @@ SIA MVP 메인 실행 파일.
 """
 
 import asyncio
+import threading
 import time
 import cv2
 import uvicorn
@@ -33,7 +34,8 @@ from server.main_server import (
     set_voice_pipeline,
 )
 from server.websocket_handler import broadcast
-from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX,
+from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX, CAM_SOURCE,
+                           CAMERA_ROTATION,
                            MIC_DEVICE_INDEX, VAD_SILENCE_THRESHOLD,
                            VAD_SILENCE_DURATION, VAD_MAX_DURATION, STT_LANGUAGE,
                            RELEVANCE_MIN_AREA, VAD_LOW_VOLUME_RMS,
@@ -53,6 +55,16 @@ MAX_FRAME_FAILS = 30             # 연속 프레임 실패 허용 횟수
 DANGER_COOLDOWN = 20.0           # 같은 객체 위험 재경고 간격 (초)
 NARRATION_INTERVAL = 20.0         # LLM 공간 묘사 간격 (초)
 
+# CAMERA_ROTATION(도) → cv2.rotate 플래그. 0이면 None(회전 안 함).
+_ROTATE_FLAGS = {
+    90:  cv2.ROTATE_90_CLOCKWISE,
+    180: cv2.ROTATE_180,
+    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+}
+_ROTATE_FLAG = _ROTATE_FLAGS.get(CAMERA_ROTATION)  # 0 → None
+# CAM_SOURCE가 URL 문자열이면 네트워크 MJPEG 스트림(ESP32-CAM) → FFmpeg 백엔드 사용
+_IS_STREAM_SOURCE = isinstance(CAM_SOURCE, str)
+
 # shutdown 시 cancel 용
 _frame_task: asyncio.Task | None = None
 _ai_task: asyncio.Task | None = None
@@ -67,20 +79,54 @@ _tts_lock = asyncio.Lock()
 voice_pipeline: VoicePipeline | None = None
 
 
+# 카메라 연결 타임아웃 (FFmpeg, ms) — 무선이 끊겨도 30초씩 멈추지 않도록 짧게.
+_CAM_OPEN_TIMEOUT_MS = 5000
+_CAM_READ_TIMEOUT_MS = 5000
+
+
 # ---------------------------------------------------------------------------
-# 웹캠 연결 헬퍼
+# 웹캠 연결 헬퍼 (동기 — 캡처 스레드에서 사용)
 # ---------------------------------------------------------------------------
-async def _open_camera() -> cv2.VideoCapture | None:
-    """웹캠 연결 시도. 실패 시 재시도 후 None 반환."""
+def _open_camera_sync() -> cv2.VideoCapture | None:
+    """웹캠 연결 시도(동기). 실패 시 재시도 후 None 반환.
+
+    - URL 소스(ESP32-CAM MJPEG): FFmpeg 백엔드 + 오픈/읽기 타임아웃 5초.
+      (무선이 죽었을 때 30초씩 매달리지 않고 빠르게 재시도)
+    - 로컬 웹캠(int 인덱스): 기본 백엔드.
+    - 공통: 내부 버퍼 1프레임으로 최신 프레임만 유지.
+    """
     for attempt in range(1, MAX_WEBCAM_RETRIES + 1):
-        cap = cv2.VideoCapture(WEBCAM_INDEX)
+        if _IS_STREAM_SOURCE:
+            cap = cv2.VideoCapture(
+                CAM_SOURCE,
+                cv2.CAP_FFMPEG,
+                [
+                    cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, _CAM_OPEN_TIMEOUT_MS,
+                    cv2.CAP_PROP_READ_TIMEOUT_MSEC, _CAM_READ_TIMEOUT_MS,
+                ],
+            )
+        else:
+            cap = cv2.VideoCapture(CAM_SOURCE)
         if cap.isOpened():
-            print(f"[MAIN] 웹캠 연결 성공 (시도 {attempt})")
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+            backend = "FFmpeg" if _IS_STREAM_SOURCE else "기본"
+            print(f"[MAIN] 웹캠 연결 성공 (시도 {attempt}, 소스={CAM_SOURCE}, 백엔드={backend})")
             return cap
         print(f"[MAIN] 웹캠 연결 실패 (시도 {attempt}/{MAX_WEBCAM_RETRIES})")
         cap.release()
-        await asyncio.sleep(WEBCAM_RETRY_DELAY)
+        time.sleep(WEBCAM_RETRY_DELAY)
     return None
+
+
+def _broadcast_threadsafe(loop: asyncio.AbstractEventLoop, payload: dict):
+    """캡처 스레드 → 이벤트 루프로 안전하게 broadcast 전달."""
+    try:
+        asyncio.run_coroutine_threadsafe(broadcast(payload), loop)
+    except Exception as e:
+        print(f"[MAIN] broadcast 전달 실패: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -104,46 +150,84 @@ def cancel_narration():
 
 
 # ---------------------------------------------------------------------------
-# 프레임 캡처 루프 (프론트 MJPEG 공급 전용, 항상 30fps)
+# 프레임 캡처 (전용 스레드 — 이벤트 루프 블로킹 방지로 딜레이 최소화)
 # ---------------------------------------------------------------------------
-async def _frame_loop():
-    """웹캠 → set_frame 전용. AI와 독립적으로 동작."""
-    cap = await _open_camera()
+def _capture_worker(loop: asyncio.AbstractEventLoop, stop_event: threading.Event):
+    """별도 스레드에서 카메라를 끊김 없이 읽어 최신 프레임만 유지한다.
+
+    왜 스레드인가:
+    - cap.read()/grab()은 블로킹 호출이다. 이걸 asyncio 루프 안에서 돌리면
+      프레임 대기 동안 이벤트 루프가 멈춰 브라우저 MJPEG 송출까지 끊긴다(딜레이↑).
+    - MJPEG 스트림은 read()가 '다음 프레임 도착'까지만 블로킹하므로, sleep 없이
+      타이트하게 읽으면 자연히 카메라 fps에 맞춰 돌며 항상 최신 프레임을 잡는다.
+      → 인위적 grab 드레인/버퍼 누적 없이 지연 최소화.
+
+    회전(CAMERA_ROTATION)은 set_frame() 직전 한 곳에서만 적용 → YOLO/bbox/거리추정
+    모두 회전된 프레임 기준으로 일관 (다운스트림이 frame.shape에서 치수 재독).
+    """
+    cap = _open_camera_sync()
     if cap is None:
-        print("[MAIN] 웹캠 연결 불가. 프레임 루프 비활성화.")
-        await broadcast({
+        print("[MAIN] 웹캠 연결 불가. 캡처 스레드 종료.")
+        _broadcast_threadsafe(loop, {
             "type": "error",
             "message": "웹캠 연결 실패. 카메라 화면을 사용할 수 없습니다.",
         })
         return
 
-    fail_count = 0
+    if _ROTATE_FLAG is not None:
+        print(f"[MAIN] 카메라 회전 적용: {CAMERA_ROTATION}도")
+
+    # 시간 기반 재연결: 마지막 정상 프레임 후 이 시간이 지나면 재연결.
+    # (read()가 타임아웃으로 느리게 실패해도 빠르게 복구 — 불안정한 무선 대비)
+    RECONNECT_AFTER_SEC = 3.0
+    last_ok = time.monotonic()
     try:
-        while True:
-            ret, frame = cap.read()
+        while not stop_event.is_set():
+            ret, frame = cap.read()  # 스트림: 다음 프레임까지만 블로킹 → 항상 최신
             if not ret:
-                fail_count += 1
-                if fail_count >= MAX_FRAME_FAILS:
-                    print("[MAIN] 프레임 읽기 연속 실패. 웹캠 재연결 시도...")
+                if time.monotonic() - last_ok > RECONNECT_AFTER_SEC:
+                    print("[MAIN] 프레임 끊김 3초 경과 → 웹캠 재연결 시도...")
                     cap.release()
-                    cap = await _open_camera()
+                    cap = _open_camera_sync()
                     if cap is None:
-                        print("[MAIN] 웹캠 재연결 실패. 프레임 루프 종료.")
-                        await broadcast({
+                        print("[MAIN] 웹캠 재연결 실패. 캡처 스레드 종료.")
+                        _broadcast_threadsafe(loop, {
                             "type": "error",
                             "message": "웹캠 재연결 실패.",
                         })
                         return
-                    fail_count = 0
-                await asyncio.sleep(0.033)
+                    last_ok = time.monotonic()
+                else:
+                    time.sleep(0.05)
                 continue
-            fail_count = 0
+
+            last_ok = time.monotonic()
+            if _ROTATE_FLAG is not None:
+                frame = cv2.rotate(frame, _ROTATE_FLAG)
             set_frame(frame)
-            await asyncio.sleep(0.033)  # ~30fps
     finally:
         if cap is not None:
             cap.release()
-        print("[MAIN] 카메라 해제")
+        print("[MAIN] 카메라 해제(캡처 스레드)")
+
+
+async def _frame_loop():
+    """캡처 스레드를 띄우고 수명만 관리한다(프레임 읽기는 스레드가 담당)."""
+    loop = asyncio.get_running_loop()
+    stop_event = threading.Event()
+    worker = threading.Thread(
+        target=_capture_worker,
+        args=(loop, stop_event),
+        name="camera-capture",
+        daemon=True,
+    )
+    worker.start()
+    try:
+        # 스레드가 살아있는 동안 대기. 태스크 취소(shutdown) 시 finally에서 정지.
+        while worker.is_alive():
+            await asyncio.sleep(0.5)
+    finally:
+        stop_event.set()
 
 
 # ---------------------------------------------------------------------------

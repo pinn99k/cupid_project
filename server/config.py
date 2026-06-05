@@ -69,6 +69,12 @@ SIA_DEBUG: bool = os.getenv("SIA_DEBUG", "").lower() in ("1", "true", "yes", "on
 # 종료 시 latency_log.json 저장 위치.
 LATENCY_LOG_DIR: str = os.getenv("LATENCY_LOG_DIR", "logs")
 
+# TTS 공급자 1순위 (속도 최적화). 실패 시 자동 폴백(edge/gemini/gtts).
+#   edge   = Edge-TTS  (~0.6s, 표준 한국어 SunHi) — 기본/권장
+#   gemini = Gemini TTS (~5.6s, 프롬프트로 따뜻한 톤)
+#   gtts   = gTTS
+TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "edge").lower()
+
 # 카메라 설정
 # 0 = 노트북 내장캠 (기본값), 1+ = 외장 USB 캠
 WEBCAM_INDEX: int = int(os.getenv("WEBCAM_INDEX", "0"))

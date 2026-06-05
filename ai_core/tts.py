@@ -15,12 +15,20 @@ import time
 from google import genai
 from google.genai import types
 
-from server.config import GEMINI_API_KEY
+from server.config import GEMINI_API_KEY, TTS_PROVIDER
 from utils.latency_logger import log
 
 TTS_VOICE = "Aoede"  # 시아 목소리
 TTS_MODEL = "gemini-2.5-flash-preview-tts"
 EDGE_TTS_VOICE = "ko-KR-SunHiNeural"  # 한국어 여성, 자연스러운 발음
+
+_TTS_PROVIDERS = ("edge", "gemini", "gtts")
+
+
+def _provider_order(primary: str) -> list[str]:
+    """1순위 + 나머지 폴백 순서. 알 수 없는 값이면 edge 기본."""
+    primary = primary if primary in _TTS_PROVIDERS else "edge"
+    return [primary] + [p for p in _TTS_PROVIDERS if p != primary]
 
 # Gemini 클라이언트 (모듈 로드 시 1회 생성)
 _genai_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -136,10 +144,26 @@ class TTSCache:
 
         return None
     
+    # ── 공급자 단위 생성 (성공 시 파일경로, 실패 시 None) ──────────────
+    async def _gen_edge(self, text: str, key: str) -> Path | None:
+        filepath = self._session_dir / f"{key}.mp3"
+        return filepath if await _edge_tts_async(text, filepath) else None
+
+    async def _gen_gemini(self, text: str, key: str) -> Path | None:
+        pcm = await asyncio.to_thread(self._gemini_tts, text)
+        if pcm is None:
+            return None
+        filepath = self._session_dir / f"{key}.wav"
+        _write_wav(filepath, pcm)
+        return filepath
+
+    async def _gen_gtts(self, text: str, key: str) -> Path | None:
+        filepath = self._session_dir / f"{key}_gtts.mp3"
+        return filepath if await asyncio.to_thread(_gtts_sync, text, filepath) else None
+
     async def _generate_and_cache(self, text: str) -> Path | None:
         """TTS 생성 후 캐시에 저장.
-        공급자 우선순위: Gemini → Edge-TTS → gTTS
-        어느 하나라도 성공하면 해당 파일 경로 반환.
+        1순위 = config.TTS_PROVIDER, 실패하면 나머지로 자동 폴백.
         """
         if self._session_dir is None:
             print("[TTS] 세션 미시작, start_session() 먼저 호출 필요")
@@ -147,37 +171,23 @@ class TTSCache:
 
         log("tts_start")
         key = self._hash(text)
+        gens = {"edge": self._gen_edge, "gemini": self._gen_gemini, "gtts": self._gen_gtts}
 
-        # 1. Gemini TTS ───────────────────────────────────────────────────
-        pcm = await asyncio.to_thread(self._gemini_tts, text)
-        if pcm is not None:
-            filepath = self._session_dir / f"{key}.wav"
-            _write_wav(filepath, pcm)
-            self._index[key] = filepath
-            log("tts_end")
-            print(f"[TTS] Gemini 사용 → {filepath.name}")
-            return filepath
-
-        # 2. Edge-TTS fallback ────────────────────────────────────────────
-        print("[TTS] Gemini 실패 → Edge-TTS 시도")
-        filepath = self._session_dir / f"{key}.mp3"
-        if await _edge_tts_async(text, filepath):
-            self._index[key] = filepath
-            log("tts_end")
-            print(f"[TTS] Gemini 실패 → Edge-TTS 사용 → {filepath.name}")
-            return filepath
-
-        # 3. gTTS fallback ────────────────────────────────────────────────
-        print("[TTS] Edge-TTS 실패 → gTTS 시도")
-        filepath = self._session_dir / f"{key}_gtts.mp3"
-        if await asyncio.to_thread(_gtts_sync, text, filepath):
-            self._index[key] = filepath
-            log("tts_end")
-            print(f"[TTS] Edge-TTS 실패 → gTTS 사용 → {filepath.name}")
-            return filepath
+        for name in _provider_order(TTS_PROVIDER):
+            try:
+                filepath = await gens[name](text, key)
+            except Exception as e:
+                print(f"[TTS] {name} 예외: {e}")
+                filepath = None
+            if filepath:
+                self._index[key] = filepath
+                log("tts_end")
+                print(f"[TTS] {name} 사용 → {filepath.name}")
+                return filepath
+            print(f"[TTS] {name} 실패 → 다음 공급자")
 
         log("tts_fail")
-        print("[TTS ERROR] 모든 TTS 공급자 실패 (Gemini / Edge-TTS / gTTS)")
+        print("[TTS ERROR] 모든 TTS 공급자 실패 (edge / gemini / gtts)")
         return None
 
     async def get_or_create(self, text: str) -> Path | None:

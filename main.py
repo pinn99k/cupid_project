@@ -9,11 +9,15 @@ SIA MVP 메인 실행 파일.
 import asyncio
 import threading
 import time
+from collections import deque
+
 import cv2
+import httpx
 import uvicorn
 
 from ai_core.vision import load_model, detect, enrich
 from ai_core.danger import judge
+from ai_core.calibration import process as calib_process
 from ai_core.audio_manager import (
     PRIORITY_DANGER,
     PRIORITY_NARRATION,
@@ -40,7 +44,10 @@ from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX, CAM_SOURCE,
                            VAD_SILENCE_DURATION, VAD_MAX_DURATION, STT_LANGUAGE,
                            RELEVANCE_MIN_AREA, VAD_LOW_VOLUME_RMS,
                            DETECTION_BROADCAST_INTERVAL, AI_LOOP_SLEEP_SEC,
-                           VOICE_OUTPUT_SETTLE_SEC, VOICE_REPROMPT_COOLDOWN_SEC)
+                           VOICE_OUTPUT_SETTLE_SEC, VOICE_REPROMPT_COOLDOWN_SEC,
+                           ULTRASONIC_URL, ULTRASONIC_POLL_SEC, ULTRASONIC_OFFSET_CM,
+                           ULTRASONIC_TIMEOUT_SEC, ULTRASONIC_STALE_SEC,
+                           ULTRASONIC_BUFFER_N)
 from server.mic import MicCapture
 from server.stt import STTClient
 from server.voice_pipeline import VoicePipeline
@@ -68,6 +75,91 @@ _IS_STREAM_SOURCE = isinstance(CAM_SOURCE, str)
 # shutdown 시 cancel 용
 _frame_task: asyncio.Task | None = None
 _ai_task: asyncio.Task | None = None
+_ultrasonic_task: asyncio.Task | None = None
+
+
+# ---------------------------------------------------------------------------
+# 초음파 거리 (디바이스 /distance 폴링 → 공유 슬롯)
+# 펌웨어는 '날것 cm'만 보낸다. 보정/필터/끊김판정은 전부 여기(서버). (refactor §0)
+# ULTRASONIC_URL 이 비면 폴링 자체를 안 띄움 → ultrasonic_cm None (현행과 100% 동일).
+# 핫패스(영상/AI) 재작성 없이 값만 옆에서 공급 → 시연 안전.
+# ---------------------------------------------------------------------------
+_latest_distance: float | None = None
+_distance_lock = threading.Lock()
+
+
+def _set_distance(cm):
+    global _latest_distance
+    with _distance_lock:
+        _latest_distance = cm
+
+
+def _get_distance():
+    """_ai_loop용 — 최신 보정거리(cm) 또는 None."""
+    with _distance_lock:
+        return _latest_distance
+
+
+class _UltrasonicState:
+    """초음파 원시값 버퍼 + 보정/중앙값 필터 + 끊김(STALE) 판정. 순수(시간 주입 → 테스트 가능).
+
+    - push(raw, now): /distance 1회 수신 성공 시 호출.
+    - value(now): 보정·필터된 cm. 마지막 응답이 stale_sec 넘게 없으면 None
+      (센서 끊김 시 오래된 값으로 긴급정지 Rule1 이 오작동하지 않게).
+    """
+
+    def __init__(self, buffer_n: int, offset_cm: float, stale_sec: float):
+        self._buf: deque = deque(maxlen=max(1, buffer_n))
+        self._offset = offset_cm
+        self._stale_sec = stale_sec
+        self._last_push_t: float | None = None
+
+    def push(self, raw_cm: float, now: float):
+        # 끊겼다 복구된 경우 오래된 버퍼는 버린다(과거값 혼입 방지).
+        if self._last_push_t is not None and (now - self._last_push_t) > self._stale_sec:
+            self._buf.clear()
+        self._buf.append(raw_cm)
+        self._last_push_t = now
+
+    def value(self, now: float):
+        if self._last_push_t is None or (now - self._last_push_t) > self._stale_sec:
+            return None  # 응답 없음(끊김) → None
+        # calib_process: 오프셋 보정 + 중앙값 필터 + 유효성(2~400). 무반사(-1)는 자동 탈락.
+        return calib_process(list(self._buf), offset=self._offset)
+
+
+async def _ultrasonic_loop():
+    """디바이스 /distance 주기 폴링 → 보정거리를 공유 슬롯에 채운다.
+
+    시연 안전:
+    - URL 미설정이면 즉시 종료(비활성).
+    - 요청 타임아웃 + 매 이터레이션 예외 무시 → 루프 불사.
+    - 끊김 시 STALE→None (오래된 값으로 오경보 금지).
+    """
+    if not ULTRASONIC_URL:
+        print("[MAIN] ULTRASONIC_URL 미설정 → 초음파 폴링 비활성 (ultrasonic_cm=None 유지)")
+        return
+
+    state = _UltrasonicState(ULTRASONIC_BUFFER_N, ULTRASONIC_OFFSET_CM, ULTRASONIC_STALE_SEC)
+    fail_streak = 0
+    print(f"[MAIN] 초음파 폴링 시작: {ULTRASONIC_URL} "
+          f"(주기 {ULTRASONIC_POLL_SEC}s, 타임아웃 {ULTRASONIC_TIMEOUT_SEC}s, "
+          f"STALE {ULTRASONIC_STALE_SEC}s)")
+    async with httpx.AsyncClient(timeout=ULTRASONIC_TIMEOUT_SEC) as client:
+        while True:
+            try:
+                resp = await client.get(ULTRASONIC_URL)
+                raw = float(resp.json()["cm"])
+                state.push(raw, time.monotonic())
+                if fail_streak:
+                    print("[MAIN] 초음파 응답 복구")
+                fail_streak = 0
+            except Exception as e:
+                fail_streak += 1
+                if fail_streak == 1 or fail_streak % 20 == 0:
+                    print(f"[MAIN] 초음파 폴링 실패({fail_streak}회째 → STALE 후 None): {e}")
+            _set_distance(state.value(time.monotonic()))
+            await asyncio.sleep(ULTRASONIC_POLL_SEC)
 _voice_task: asyncio.Task | None = None
 _narration_in_progress = False
 _narration_task: asyncio.Task | None = None
@@ -262,7 +354,9 @@ async def _ai_loop():
         h, w = frame.shape[:2]
         log("detect_start")
         dets = await asyncio.to_thread(detect, frame)
-        enriched = enrich(dets, w, h, min_relevant_area=RELEVANCE_MIN_AREA)
+        # 초음파 거리 주입 (폴링 루프가 채움; 미연결/끊김이면 None → 기존 동작과 동일)
+        enriched = enrich(dets, w, h, ultrasonic_cm=_get_distance(),
+                          min_relevant_area=RELEVANCE_MIN_AREA)
         log("detect_end")
 
         # 최신 장면을 공유 슬롯에 저장 — "시아야 질문" 시 VQA가 읽음 (Unit 3)
@@ -412,7 +506,7 @@ async def _run_narration(enriched, tts, audio, stage):
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup():
-    global _frame_task, _ai_task, _voice_task, voice_pipeline
+    global _frame_task, _ai_task, _voice_task, _ultrasonic_task, voice_pipeline
     print("[SIA] 초기화 시작...")
     load_model()
     llm_init()
@@ -423,6 +517,9 @@ async def startup():
     _ai_task = asyncio.create_task(_ai_loop())
     _frame_task.add_done_callback(_task_done_callback)
     _ai_task.add_done_callback(_task_done_callback)
+    # 초음파 폴링 (URL 미설정이면 루프가 즉시 종료 → 비활성)
+    _ultrasonic_task = asyncio.create_task(_ultrasonic_loop())
+    _ultrasonic_task.add_done_callback(_task_done_callback)
     # VoicePipeline 초기화
     mic = MicCapture(
         device_index=MIC_DEVICE_INDEX,
@@ -454,11 +551,11 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    global _frame_task, _ai_task, _voice_task, voice_pipeline
+    global _frame_task, _ai_task, _voice_task, _ultrasonic_task, voice_pipeline
     print("[SIA] 서버 종료 시작...")
     if voice_pipeline:
         voice_pipeline.stop()
-    for t in (_frame_task, _ai_task, _voice_task):
+    for t in (_frame_task, _ai_task, _voice_task, _ultrasonic_task):
         if t and not t.done():
             t.cancel()
             try:

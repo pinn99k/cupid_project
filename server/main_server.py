@@ -181,12 +181,17 @@ async def handle_dashboard_message(msg: dict):
         print(f"[SERVER] 이벤트 수신: {event}")
 
         if event == "start_learning":
+            stage = msg.get("stage", 1)
             app_state.learning_active = True
-            app_state.current_stage = msg.get("stage", 1)
-            print(f"[SERVER] 학습 시작: Stage {app_state.current_stage}")
-            # 학습 시작 = 마이크 청취 활성화
+            app_state.current_stage = stage
+            print(f"[SERVER] 학습 시작: Stage {stage}")
+            # 단계별 음성 게이팅 (서버가 강제 — 프론트가 실수로 보내도 보정)
+            #  수용(1) = 캠만, 음성 인식 OFF / 방향(2)+ = 음성 ON("시아야" 응답)
             if _voice_pipeline:
-                _voice_pipeline.start()
+                if stage >= 2:
+                    _voice_pipeline.start()
+                else:
+                    _voice_pipeline.stop_listening()
             await broadcast({
                 "type": "ack",
                 "event": "start_learning",

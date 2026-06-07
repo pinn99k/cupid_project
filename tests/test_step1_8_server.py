@@ -20,7 +20,8 @@ def test_server_structure():
     print("=" * 50)
 
     # Case 1: FastAPI app import
-    from server.main_server import app, app_state
+    from server.main_server import app, app_state, reset_session
+    reset_session()
     assert app is not None, "FastAPI app이 None이면 안 됨"
     print("[PASS] Case 1: FastAPI app import 성공")
 

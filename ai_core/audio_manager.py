@@ -54,6 +54,7 @@ class PlaybackRequest:
     started: threading.Event = field(default_factory=threading.Event, compare=False)
     finished: threading.Event = field(default_factory=threading.Event, compare=False)
     cancelled: threading.Event = field(default_factory=threading.Event, compare=False)
+    enqueued_at: float = field(default=0.0, compare=False)  # monotonic ms (대기시간 진단)
 
 
 class AudioManager:
@@ -98,8 +99,16 @@ class AudioManager:
         if interrupt:
             self.stop(clear_queue=True)
 
-        request = PlaybackRequest(priority, next(self._sequence), filepath)
+        request = PlaybackRequest(
+            priority, next(self._sequence), filepath,
+            enqueued_at=time.monotonic() * 1000,
+        )
         self._queue.put(request)
+        print(
+            f"[AUDIO_QUEUE] enqueue at={request.enqueued_at:.0f}ms"
+            f" queue_size={self._queue.qsize()} priority={priority}"
+            f" interrupt={interrupt} file={Path(filepath).name}"
+        )
         return request
 
     async def wait(self, request: PlaybackRequest | None) -> bool:
@@ -109,10 +118,16 @@ class AudioManager:
         await asyncio.to_thread(request.finished.wait)
         return not request.cancelled.is_set()
 
-    async def wait_until_idle(self):
-        """재생 중이거나 대기 중인 음원이 모두 끝날 때까지 대기."""
+    async def wait_until_idle(self, timeout: float = 30.0):
+        """재생 중이거나 대기 중인 음원이 모두 끝날 때까지 대기.
+        timeout(초) 초과 시 강제 반환 — 오디오가 멈춰도 마이크가 영구 차단되지 않게 보장."""
+        start = time.monotonic()
         while self.is_playing() or not self._queue.empty():
-            await asyncio.sleep(0.05)
+            if time.monotonic() - start > timeout:
+                print(f"[AUDIO] wait_until_idle 타임아웃({timeout}s) → 강제 진행(마이크 재개)")
+                self.stop(clear_queue=True)
+                return
+            await asyncio.sleep(0.02)
 
     def stop(self, *, clear_queue: bool = False):
         """현재 재생을 중단하고 필요하면 대기 요청도 취소."""
@@ -151,6 +166,12 @@ class AudioManager:
             try:
                 if request.cancelled.is_set():
                     continue
+                _now = time.monotonic() * 1000
+                _waited = _now - request.enqueued_at if request.enqueued_at else 0.0
+                print(
+                    f"[AUDIO_QUEUE] dequeue at={_now:.0f}ms waited={_waited:.0f}ms"
+                    f" file={Path(request.filepath).name}"
+                )
                 with self._state_lock:
                     self._current = request
                 self._play_file(request)
@@ -166,6 +187,8 @@ class AudioManager:
         """실제 재생. Audio Thread 내부에서만 호출."""
         try:
             log("audio_play_start")
+            _pb_start = time.monotonic() * 1000
+            print(f"[AUDIO_PLAYBACK] start at={_pb_start:.0f}ms file={Path(request.filepath).name}")
             pygame.mixer.music.load(request.filepath)
             pygame.mixer.music.play()
             request.started.set()
@@ -179,6 +202,13 @@ class AudioManager:
                     break
                 clock.tick(50)
             log("audio_play_end")
+            _pb_end = time.monotonic() * 1000
+            print(
+                f"[AUDIO_PLAYBACK] end at={_pb_end:.0f}ms"
+                f" duration={_pb_end - _pb_start:.0f}ms"
+                f" cancelled={request.cancelled.is_set()}"
+                f" file={Path(request.filepath).name}"
+            )
         except Exception as e:
             print(f"[AUDIO ERROR] {request.filepath}: {e}")
 

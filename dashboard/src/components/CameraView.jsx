@@ -8,7 +8,7 @@ const STAGE_LABELS = {
 
 // 카메라 박스 비율 — 박스 자체를 영상 비율로 만들어 왜곡·잘림·까만띠 없이 꽉 채운다.
 // 박스 양옆 남는 자리는 페이지 배경(크림색)이 된다.
-// 세로(회전 90/270): "3 / 4"   |   가로(회전 0/180): "4 / 3"
+// ESP32-CAM/세로(회전 90/270): "3 / 4"   |   웹캠/가로(회전 0/180): "4 / 3"
 const VIDEO_ASPECT = "3 / 4";
 
 export default function CameraView({ stage, objects = [], danger }) {

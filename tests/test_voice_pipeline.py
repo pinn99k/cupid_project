@@ -148,6 +148,7 @@ class TestRunOneTurn:
     async def test_full_turn_flow(self, mock_mic, mock_stt, tts_lock):
         """전체 턴 흐름: listen → STT → LLM → TTS. broadcast 순서 검증."""
         vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)
+        vp.start()
 
         broadcast_calls = []
 
@@ -211,6 +212,7 @@ class TestRunOneTurn:
         mic.listen = AsyncMock(return_value=None)
         mic.last_error = "Error querying device -1"
         vp = VoicePipeline(mic=mic, stt=mock_stt, tts_lock=tts_lock)
+        vp.start()
 
         with patch(BROADCAST_PATH, new=AsyncMock()) as mock_broadcast, \
              patch("server.voice_pipeline.asyncio.sleep", new=AsyncMock()) as mock_sleep:
@@ -338,6 +340,7 @@ class TestRunOneTurn:
     async def test_history_grows_after_turn(self, mock_mic, mock_stt, tts_lock):
         """성공적인 턴 후 chat_history에 2개 항목 추가."""
         vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)
+        vp.start()
 
         mock_am = MagicMock()
         mock_am.wait = AsyncMock(return_value=True)
@@ -354,6 +357,78 @@ class TestRunOneTurn:
         assert len(vp.chat_history) == 2
         assert vp.chat_history[0] == {"role": "user", "content": "안녕하세요"}
         assert vp.chat_history[1] == {"role": "assistant", "content": "응답"}
+
+    @pytest.mark.asyncio
+    async def test_demo_mode_greeting_plays_pre_recorded_voice(self, tmp_path, mock_mic, mock_stt, tts_lock):
+        """DEMO_MODE=true면 LLM/Gemini TTS 없이 사전 음성 파일을 바로 재생."""
+        voice_dir = tmp_path / "voices"
+        voice_dir.mkdir()
+        (voice_dir / "greeting.wav").write_bytes(b"RIFF" + b"\0" * 100)
+        mock_stt.transcribe = AsyncMock(return_value="시아야 안녕")
+        mock_am = MagicMock()
+        mock_am.wait_until_idle = AsyncMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock, audio_manager=mock_am)
+        vp.start()
+
+        with patch("server.voice_pipeline.DEMO_MODE", True), \
+             patch("server.demo_responses.DEMO_VOICE_DIR", voice_dir), \
+             patch(BROADCAST_PATH, new=AsyncMock()) as mock_broadcast, \
+             patch("ai_core.llm_client.call_async", new=AsyncMock()) as mock_llm, \
+             patch("ai_core.tts.get_tts_cache") as mock_tts:
+            await vp._run_one_turn()
+
+        mock_llm.assert_not_called()
+        mock_tts.assert_not_called()
+        mock_am.play_path.assert_called_once()
+        assert mock_am.play_path.call_args.args[0].endswith("greeting.wav")
+        assert vp.voice_history == ["greeting.wav"]
+        response = [
+            call.args[0] for call in mock_broadcast.await_args_list
+            if call.args[0]["type"] == "stt_response"
+        ][0]
+        assert response["audio_file"] == "greeting.wav"
+
+    @pytest.mark.asyncio
+    async def test_demo_mode_scene_traffic_light_only_once(self, tmp_path, mock_mic, mock_stt, tts_lock):
+        """같은 시연 세션에서 신호등은 한 번만 안내하고 이후 all_clear로 넘어간다."""
+        voice_dir = tmp_path / "voices"
+        voice_dir.mkdir()
+        for filename in ("traffic_light.wav", "all_clear.wav"):
+            (voice_dir / filename).write_bytes(b"RIFF" + b"\0" * 100)
+        scene = {
+            "objects": [
+                {"label": "traffic light", "bbox": {"x": 0.05, "y": 0, "w": 0.1, "h": 0.2}}
+            ]
+        }
+        mock_stt.transcribe = AsyncMock(side_effect=["시아야 앞에 뭐 있어", "시아야 앞에 뭐 있어"])
+        mock_am = MagicMock()
+        mock_am.wait_until_idle = AsyncMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        vp = VoicePipeline(
+            mic=mock_mic,
+            stt=mock_stt,
+            tts_lock=tts_lock,
+            audio_manager=mock_am,
+            scene_provider=lambda: (scene, 0),
+        )
+        vp.start()
+
+        with patch("server.voice_pipeline.DEMO_MODE", True), \
+             patch("server.demo_responses.DEMO_VOICE_DIR", voice_dir), \
+             patch(BROADCAST_PATH, new=AsyncMock()):
+            await vp._run_one_turn()
+            await vp._run_one_turn()
+
+        assert vp.voice_history == ["traffic_light.wav", "all_clear.wav"]
+        assert mock_am.play_path.call_args_list[0].args[0].endswith("traffic_light.wav")
+        assert mock_am.play_path.call_args_list[1].args[0].endswith("all_clear.wav")
+
+    def test_reset_clears_demo_voice_history(self, mock_mic, mock_stt, tts_lock):
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)
+        vp._voice_history.extend(["traffic_light.wav"])
+        vp.reset()
+        assert vp.voice_history == []
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +452,7 @@ class TestVQA:
         scene = {"objects": [{"label": "person", "direction": "center", "distance_est": "near"}]}
         provider = lambda: (scene, _time.time() * 1000)  # 방금 갱신 = 신선
         vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock, scene_provider=provider)
+        vp.start()
 
         captured = {}
         async def fake_call(system_prompt, user_msg, *a, **k):
@@ -400,6 +476,7 @@ class TestVQA:
         provider = lambda: (scene, _time.time() * 1000 - 9999)  # 오래됨
         vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock,
                            scene_provider=provider, scene_fresh_sec=2.0)
+        vp.start()
 
         captured = {}
         async def fake_call(system_prompt, user_msg, *a, **k):
@@ -420,6 +497,7 @@ class TestVQA:
         """답변 성공 시 count_question 콜백 1회 호출."""
         counter = MagicMock()
         vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock, count_question=counter)
+        vp.start()
 
         mock_am, mock_tts = self._mocks()
         with patch(BROADCAST_PATH, new=AsyncMock()), \

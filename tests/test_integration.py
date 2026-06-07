@@ -53,7 +53,11 @@ class TestTurnSerialization:
     @pytest.mark.asyncio
     @patch("server.voice_pipeline.broadcast", new_callable=AsyncMock)
     async def test_broadcast_order_in_full_turn(self, mock_broadcast, pipeline):
-        """한 턴에서 broadcast 순서: voice_listening → voice_processing → user_stt → stt_response → tts_start → tts_done"""
+        """한 턴에서 broadcast 순서: voice_listening → voice_processing → user_stt → tts_start → stt_response → tts_done
+
+        자막(stt_response)은 문장별로 해당 문장 오디오 재생 직전에 나간다.
+        따라서 tts_start 이후, tts_done 이전에 위치한다(문장 수만큼 stt_response 발생).
+        """
         pipeline.start()
         with patch("ai_core.llm_client.call_async", new_callable=AsyncMock, return_value="안녕! 반가워"), \
              patch("ai_core.tts.get_tts_cache") as mock_tts, \
@@ -72,8 +76,8 @@ class TestTurnSerialization:
                 "voice_listening",
                 "voice_processing",
                 "user_stt",
-                "stt_response",
                 "tts_start",
+                "stt_response",
                 "tts_done",
             ], f"Expected strict order, got: {types}"
 

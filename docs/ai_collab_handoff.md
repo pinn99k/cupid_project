@@ -26,8 +26,8 @@
 | 이벤트 | 의미 | 서버 동작(불변식) |
 |--------|------|-------------------|
 | `{event:"new_session"}` | 깨끗한 재시작 | stage=1, learning off, scene clear, voice reset, TTS 새 세션 |
-| `{event:"start_learning", stage:1}` | 수용단계 진입 | 캠만. **voice 인식 OFF** |
-| `{event:"start_learning", stage:2}` | 방향단계 진입 | YOLO 실시간 + **voice ON**("시아야" 응답) |
+| `{event:"start_learning", stage:1}` | 수용단계 진입 | 캠 + **voice ON**(일반 대화, scene 없음). 시아와 친해지는 단계 |
+| `{event:"start_learning", stage:2}` | 방향단계 진입 | YOLO 실시간 + **voice ON**(scene 기반 VQA, "시아야" 응답) |
 | `{event:"start_learning", stage:3}` | (사용 안 함) | 대시보드가 **보내지 않음**(버튼 비활성). 서버 코드는 보존 |
 | `{event:"stop_learning"}` | 정지 | reset_session |
 | `{event:"fallback", audio_file}` | 수동 TTS 재생 | 스테이지 무관, 즉시 재생 |
@@ -35,7 +35,7 @@
 
 **서버 → 대시보드**: `init_state`/`ack`, `detections_update{objects[].bbox}`, `narration`/`stt_response`/`user_stt`/`error`, `tts_start`/`tts_done`, `voice_listening`/`voice_processing`, `danger`(stage3 전용 — 현재 미사용).
 
-> 핵심 불변식: **stage 1 = 음성 OFF / stage 2 = 음성 ON**은 **서버가 강제**한다(프론트가 실수로 보내도 서버가 보정).
+> 핵심 불변식: **모든 단계 음성 ON**(서버가 `start_learning` 시 `_voice_pipeline.start()` 강제). 차이는 scene 유무 — stage1=일반 대화, stage2+=scene 기반 VQA. (이전 "stage1=음성 OFF"는 폐기)
 
 ---
 

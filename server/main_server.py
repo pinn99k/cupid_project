@@ -185,13 +185,11 @@ async def handle_dashboard_message(msg: dict):
             app_state.learning_active = True
             app_state.current_stage = stage
             print(f"[SERVER] 학습 시작: Stage {stage}")
-            # 단계별 음성 게이팅 (서버가 강제 — 프론트가 실수로 보내도 보정)
-            #  수용(1) = 캠만, 음성 인식 OFF / 방향(2)+ = 음성 ON("시아야" 응답)
+            # 음성 인식: 모든 단계에서 ON.
+            #  수용(1)도 시아와 대화하며 친해지는 단계라 음성 ON(일반 대화만, scene 없음).
+            #  방향(2)+ 는 scene 기반 VQA까지. (이전엔 stage1=음성 OFF였으나 대화 가능하게 변경)
             if _voice_pipeline:
-                if stage >= 2:
-                    _voice_pipeline.start()
-                else:
-                    _voice_pipeline.stop_listening()
+                _voice_pipeline.start()
             await broadcast({
                 "type": "ack",
                 "event": "start_learning",

@@ -22,7 +22,62 @@ import unittest.mock as _mock
 _sd_mock = _mock.MagicMock()
 sys.modules.setdefault("sounddevice", _sd_mock)
 
-from server.mic import MicCapture
+from server.mic import MicCapture, compute_silence_threshold
+
+
+# ---------------------------------------------------------------------------
+# compute_silence_threshold 테스트 (적응형 무음 임계, 순수 함수)
+# ---------------------------------------------------------------------------
+
+class TestComputeSilenceThreshold:
+    """적응형 무음 임계 계산 헬퍼 검증 (하드웨어 불필요)."""
+
+    def test_adaptive_off_returns_base(self):
+        """킬스위치 off면 ambient 무관하게 base_threshold 그대로."""
+        assert compute_silence_threshold(
+            ambient_rms=999, base_threshold=100, factor=2.0, adaptive=False
+        ) == 100.0
+
+    def test_quiet_ambient_keeps_base(self):
+        """배경이 조용하면(ambient*factor < base) base 가 하한으로 유지."""
+        # 30 * 2.0 = 60 < 100 → base 100
+        assert compute_silence_threshold(
+            ambient_rms=30, base_threshold=100, factor=2.0, adaptive=True
+        ) == 100.0
+
+    def test_noisy_ambient_raises_threshold(self):
+        """배경이 시끄러우면 ambient*factor 로 임계가 상승."""
+        # 300 * 2.0 = 600 > 100 → 600
+        assert compute_silence_threshold(
+            ambient_rms=300, base_threshold=100, factor=2.0, adaptive=True
+        ) == 600.0
+
+    def test_factor_scales_threshold(self):
+        """factor 가 동적 임계에 곱해진다."""
+        assert compute_silence_threshold(
+            ambient_rms=200, base_threshold=100, factor=1.5, adaptive=True
+        ) == 300.0
+
+    def test_threshold_capped(self):
+        """비정상적으로 큰 ambient 도 cap 으로 상한 적용."""
+        result = compute_silence_threshold(
+            ambient_rms=10000, base_threshold=100, factor=2.0, adaptive=True, cap=800
+        )
+        assert result == 800.0
+
+    def test_zero_ambient(self):
+        """ambient=0 이면 base 가 그대로(연산 안전)."""
+        assert compute_silence_threshold(
+            ambient_rms=0, base_threshold=100, factor=2.0, adaptive=True
+        ) == 100.0
+
+    def test_returns_float(self):
+        assert isinstance(
+            compute_silence_threshold(
+                ambient_rms=300, base_threshold=100, factor=2.0, adaptive=True
+            ),
+            float,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +112,23 @@ class TestMicCaptureInit:
     def test_device_index_none_by_default(self):
         mic = MicCapture()
         assert mic.device_index is None
+
+    def test_adaptive_defaults_from_config(self):
+        """adaptive/ambient_factor 미지정 시 config 기본값을 따른다."""
+        from server import config as cfg
+        mic = MicCapture()
+        assert mic.adaptive == bool(cfg.VAD_ADAPTIVE)
+        assert mic.ambient_factor == float(cfg.VAD_AMBIENT_FACTOR)
+
+    def test_adaptive_kill_switch_explicit(self):
+        """adaptive=False 명시 시 킬스위치 적용."""
+        mic = MicCapture(adaptive=False)
+        assert mic.adaptive is False
+
+    def test_ambient_factor_override(self):
+        """ambient_factor 명시값이 반영된다."""
+        mic = MicCapture(ambient_factor=1.5)
+        assert mic.ambient_factor == 1.5
 
 
 # ---------------------------------------------------------------------------

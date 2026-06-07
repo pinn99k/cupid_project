@@ -141,6 +141,15 @@ VAD_MAX_DURATION: float = float(os.getenv("VAD_MAX_DURATION", "7"))
 # silence_threshold보다 높게 — 들리긴 하나 STT엔 너무 작은 구간. 0이면 비활성.
 VAD_LOW_VOLUME_RMS: float = float(os.getenv("VAD_LOW_VOLUME_RMS", "0"))
 
+# 적응형 무음 임계(ambient calibration) 킬스위치.
+# on(기본): 녹음 시작 시 배경소음 RMS를 측정해 무음 임계를 자동 보정 →
+#   부스 배경소음이 커도 발화 끝(무음)을 제대로 감지(max_duration 통녹음 방지).
+# off: VAD_SILENCE_THRESHOLD 고정값만 사용(기존 동작).
+VAD_ADAPTIVE: bool = os.getenv("VAD_ADAPTIVE", "on").lower() in ("1", "true", "yes", "on")
+# 동적 무음 임계 = max(VAD_SILENCE_THRESHOLD, ambient_rms * VAD_AMBIENT_FACTOR).
+# 계수가 클수록 무음 기준이 배경소음보다 더 높이 올라간다(1.5~2.0 권장).
+VAD_AMBIENT_FACTOR: float = float(os.getenv("VAD_AMBIENT_FACTOR", "2.0"))
+
 # STT 설정
 STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "ko-KR")
 

@@ -19,13 +19,13 @@ def test_open_camera_success():
     print("Phase 2-1: _open_camera 성공")
     print("=" * 50)
 
-    from main import _open_camera
+    from main import _open_camera_sync
 
     mock_cap = MagicMock()
     mock_cap.isOpened.return_value = True
 
     with patch("main.cv2.VideoCapture", return_value=mock_cap):
-        cap = asyncio.run(_open_camera())
+        cap = _open_camera_sync()
 
     assert cap is not None, "웹캠 연결 성공 시 VideoCapture 반환"
     assert cap.isOpened(), "isOpened() == True"
@@ -39,7 +39,7 @@ def test_open_camera_retry_then_success():
     print("Phase 2-2: _open_camera 재시도 후 성공")
     print("=" * 50)
 
-    from main import _open_camera
+    from main import _open_camera_sync
 
     fail_cap = MagicMock()
     fail_cap.isOpened.return_value = False
@@ -50,7 +50,7 @@ def test_open_camera_retry_then_success():
     # 2번 실패, 3번째 성공
     with patch("main.cv2.VideoCapture", side_effect=[fail_cap, fail_cap, success_cap]):
         with patch("main.WEBCAM_RETRY_DELAY", 0):  # 테스트 속도를 위해 딜레이 0
-            cap = asyncio.run(_open_camera())
+            cap = _open_camera_sync()
 
     assert cap is not None, "3번째 시도에서 성공해야 함"
     assert cap is success_cap, "성공한 캡처 객체 반환"
@@ -65,14 +65,14 @@ def test_open_camera_all_fail():
     print("Phase 2-3: _open_camera 전부 실패")
     print("=" * 50)
 
-    from main import _open_camera, MAX_WEBCAM_RETRIES
+    from main import _open_camera_sync, MAX_WEBCAM_RETRIES
 
     fail_cap = MagicMock()
     fail_cap.isOpened.return_value = False
 
     with patch("main.cv2.VideoCapture", return_value=fail_cap):
         with patch("main.WEBCAM_RETRY_DELAY", 0):
-            cap = asyncio.run(_open_camera())
+            cap = _open_camera_sync()
 
     assert cap is None, "전부 실패 시 None 반환"
     assert fail_cap.release.call_count == MAX_WEBCAM_RETRIES, \
@@ -130,7 +130,7 @@ def test_frame_loop_no_camera():
 
     from main import _frame_loop
 
-    with patch("main._open_camera", new_callable=AsyncMock, return_value=None):
+    with patch("main._open_camera_sync", return_value=None):
         with patch("main.broadcast", new_callable=AsyncMock) as mock_broadcast:
             asyncio.run(_frame_loop())
 
@@ -158,16 +158,16 @@ def test_frame_loop_frame_fail_recovery():
 
     call_count = 0
 
-    async def mock_open_camera():
+    def mock_open_camera():
         nonlocal call_count
         call_count += 1
         if call_count == 1:
             return mock_cap  # 최초 연결 성공
         return None           # 재연결 실패 → 루프 종료
 
-    mock_open = AsyncMock(side_effect=mock_open_camera)
+    mock_open = MagicMock(side_effect=mock_open_camera)
 
-    with patch("main._open_camera", mock_open):
+    with patch("main._open_camera_sync", mock_open):
         with patch("main.broadcast", new_callable=AsyncMock):
             with patch("main.MAX_FRAME_FAILS", 3):  # 3회 실패로 줄임
                 asyncio.run(_frame_loop())

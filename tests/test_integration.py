@@ -54,6 +54,7 @@ class TestTurnSerialization:
     @patch("server.voice_pipeline.broadcast", new_callable=AsyncMock)
     async def test_broadcast_order_in_full_turn(self, mock_broadcast, pipeline):
         """한 턴에서 broadcast 순서: voice_listening → voice_processing → user_stt → stt_response → tts_start → tts_done"""
+        pipeline.start()
         with patch("ai_core.llm_client.call_async", new_callable=AsyncMock, return_value="안녕! 반가워"), \
              patch("ai_core.tts.get_tts_cache") as mock_tts, \
              patch("ai_core.audio_manager.get_audio_manager") as mock_am:
@@ -95,6 +96,7 @@ class TestTurnSerialization:
         mock_stt.transcribe = AsyncMock(return_value=None)  # STT 실패 → 턴 즉시 종료
 
         vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)
+        vp.start()
 
         async def stop_after():
             await asyncio.sleep(0.5)

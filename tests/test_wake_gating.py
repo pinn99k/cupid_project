@@ -37,6 +37,7 @@ def _types(mock_bc):
 async def test_non_wake_ignored(mock_bc, make_pipeline):
     """호출어 없는 발화 → user_stt/stt_response 없음 (무시)."""
     vp = make_pipeline("안녕하세요 오늘 날씨 좋다")
+    vp.start()
     await vp._run_one_turn()
     types = _types(mock_bc)
     assert "user_stt" not in types
@@ -48,6 +49,7 @@ async def test_non_wake_ignored(mock_bc, make_pipeline):
 async def test_wake_only_no_question_ignored(mock_bc, make_pipeline):
     """'시아야'만 (질문 없음) → 무시."""
     vp = make_pipeline("시아야")
+    vp.start()
     await vp._run_one_turn()
     assert "user_stt" not in _types(mock_bc)
 
@@ -58,6 +60,7 @@ async def test_wake_only_no_question_ignored(mock_bc, make_pipeline):
 async def test_wake_triggers_with_query(mock_bc, mock_llm, make_pipeline):
     """'시아야 뭐해' → 호출어 제거된 '뭐해'로 진행 + LLM 호출."""
     vp = make_pipeline("시아야 뭐해")
+    vp.start()
     await vp._run_one_turn()
     types = _types(mock_bc)
     assert "user_stt" in types

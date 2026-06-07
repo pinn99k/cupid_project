@@ -204,8 +204,8 @@ class TestRecordSync:
         # 무음 chunk (RMS < 100) — silence_frames_limit 초과 분량
         silent_chunk = self._make_chunk(0)
 
-        # 음성 3번 → 무음 충분히
-        chunks = [speech_chunk] * 3 + [silent_chunk] * 20
+        # 배경 측정 무음 → 음성 → 무음 충분히
+        chunks = [silent_chunk] * 5 + [speech_chunk] * 3 + [silent_chunk] * 30
 
         mock_stream = MagicMock()
         mock_stream.__enter__ = MagicMock(return_value=mock_stream)
@@ -239,10 +239,11 @@ class TestRecordSync:
             silence_duration=0.1,
             max_duration=5,
         )
+        background = self._make_chunk(0)
         quiet_lead = self._make_chunk(50)
         speech_chunk = self._make_chunk(500)
         silent_chunk = self._make_chunk(0)
-        chunks = [quiet_lead, speech_chunk] + [silent_chunk] * 20
+        chunks = [background] * 5 + [quiet_lead, speech_chunk] + [silent_chunk] * 30
 
         mock_stream = MagicMock()
         mock_stream.__enter__ = MagicMock(return_value=mock_stream)
@@ -254,7 +255,9 @@ class TestRecordSync:
 
         with wave.open(io.BytesIO(result), "rb") as wf:
             samples = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
-        assert samples[0] == 50
+        quiet_idx = np.where(samples == 50)[0][0]
+        speech_idx = np.where(samples == 500)[0][0]
+        assert quiet_idx < speech_idx
 
     def test_formats_macos_portaudio_error_with_hints(self):
         """macOS PortAudio 입력 오류에는 권한/장치 안내를 덧붙인다."""

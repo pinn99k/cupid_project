@@ -44,6 +44,9 @@ class MicCapture:
         # 직전 녹음의 평균 RMS(저음량 되묻기 판정용, Unit 4). 발화 없으면 0.0.
         self.last_rms: float = 0.0
         self.last_error: str | None = None
+        # 직전 녹음의 종료 원인/길이 — 파이프라인 타이밍 진단용
+        self.last_exit_reason: str = "none"
+        self.last_record_sec: float = 0.0
         # 최근 10회 종료 원인 통계 (silence / max_duration)
         self._exit_stats: deque[str] = deque(maxlen=10)
 
@@ -142,7 +145,10 @@ class MicCapture:
                     pre_roll.append(chunk)
                     total_frames += 1
 
-                bg_rms = float(np.mean(bg_rms_samples)) if bg_rms_samples else 0.0
+                # 25퍼센타일 사용(mean 아님): 체험자가 응답 직후 곧바로 말해
+                # 배경측정 구간에 음성이 섞여도, 조용한 프레임 기준으로 배경을 잡아
+                # 임계값이 부풀어 발화를 놓치는 문제를 방지(연속 발화 안정성 핵심).
+                bg_rms = float(np.percentile(bg_rms_samples, 25)) if bg_rms_samples else 0.0
                 adaptive_threshold = min(
                     max(self.silence_threshold, int(bg_rms * 2.0)),
                     800,
@@ -150,8 +156,12 @@ class MicCapture:
                 silence_exit_threshold = adaptive_threshold * 0.75
                 spike_reset_threshold  = adaptive_threshold * 0.8
 
+                # 청취 예산을 배경측정/에코스킵과 분리 — max_duration 전체를
+                # '실제 청취'에 사용(배경측정 0.3s가 녹음 시간을 깎지 않음).
+                total_frames = 0
+
                 print(
-                    f"[MicCapture] 배경RMS={bg_rms:.0f}"
+                    f"[MicCapture] 배경RMS(25%)={bg_rms:.0f}"
                     f" 감지임계={adaptive_threshold}"
                     f" 침묵임계={silence_exit_threshold:.0f}"
                     f" silence_limit={silence_frames_limit}프레임"
@@ -161,7 +171,11 @@ class MicCapture:
                 )
                 # ──────────────────────────────────────────────────────────
 
-                while total_frames < max_frames:
+                # 에코스킵이 예산을 무한정 깎지 않도록 절대 반복 상한
+                _iter_guard = 0
+                _iter_guard_max = max_frames * 4
+                while total_frames < max_frames and _iter_guard < _iter_guard_max:
+                    _iter_guard += 1
                     chunk, _ = stream.read(chunk_size)
                     chunk = chunk.flatten()
                     rms = self._calc_rms(chunk)
@@ -182,7 +196,7 @@ class MicCapture:
                             speech_frames += 1
                         else:
                             pre_roll.append(chunk)
-                        total_frames += 1
+                        # 에코 재생 중 프레임은 청취 예산(total_frames)에서 제외
                         continue
                     # ──────────────────────────────────────────────────────
 
@@ -275,8 +289,8 @@ class MicCapture:
                     total_frames += 1
 
                 # ── 종료 진단 로그 ───────────────────────────────────────
+                last_rms_str = " ".join(f"{r:.0f}" for r in rms_history)
                 if speech_started:
-                    last_rms_str = " ".join(f"{r:.0f}" for r in rms_history)
                     print(
                         f"[MicCapture] 종료 원인: {exit_reason}"
                         f" | speech={speech_frames}프레임"
@@ -285,6 +299,16 @@ class MicCapture:
                         f" echo스킵={echo_skip_frames}프레임"
                     )
                     print(f"[MicCapture] 종료 직전 10프레임 RMS: [{last_rms_str}]")
+                else:
+                    # 발화 미감지: 임계값보다 큰 음성이 한 번도 안 들어옴
+                    _max_seen = max(rms_history) if rms_history else 0
+                    print(
+                        f"[MicCapture] ⚠️ 발화 미감지 — 감지임계({adaptive_threshold})를"
+                        f" 넘는 음성 없음 (관측 최대RMS={_max_seen:.0f})."
+                        f"\n  → 마이크에 더 가까이/크게 말하거나, 배경이 너무 시끄러우면"
+                        f" VAD_SILENCE_THRESHOLD를 낮춰 민감도↑ 또는 마이크 게인↑ 필요."
+                        f"\n  최근10RMS=[{last_rms_str}]"
+                    )
 
                 self._exit_stats.append(
                     exit_reason if speech_started else "no_speech"
@@ -314,11 +338,16 @@ class MicCapture:
         total_samples = len(audio_data)
         duration = total_samples / self.sample_rate
 
+        # 파이프라인이 읽어 [MIC_STATE] 로그에 사용
+        self.last_exit_reason = exit_reason if speech_started else "no_speech"
+        self.last_record_sec = duration
+
         print(
             f"[RECORDED AUDIO]"
             f" duration={duration:.2f}s"
             f" samples={total_samples}"
             f" frames={len(recorded)}"
+            f" exit={self.last_exit_reason}"
         )
 
         return self._to_wav_bytes(audio_data)

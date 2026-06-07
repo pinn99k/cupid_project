@@ -66,6 +66,9 @@ SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8000"))
 # 디버그/계측 (Phase 0 측정)
 # SIA_DEBUG=1 이면 핫루프 latency print 노출. 기본 꺼짐(스팸 방지). 집계는 항상 수행.
 SIA_DEBUG: bool = os.getenv("SIA_DEBUG", "").lower() in ("1", "true", "yes", "on")
+# 시연 모드: 호출어 뒤 질문을 키워드/YOLO 장면으로 매칭하고 사전 녹음 음성을 즉시 재생.
+# true면 LLM/Gemini TTS 경로를 우회한다.
+DEMO_MODE: bool = os.getenv("DEMO_MODE", "").lower() in ("1", "true", "yes", "on")
 # 종료 시 latency_log.json 저장 위치.
 LATENCY_LOG_DIR: str = os.getenv("LATENCY_LOG_DIR", "logs")
 

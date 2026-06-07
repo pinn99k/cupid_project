@@ -17,6 +17,11 @@ from server.voice_pipeline import VoicePipeline
 def mock_mic():
     mic = MagicMock()
     mic.listen = AsyncMock(return_value=b"fake_wav_data")
+    # MagicMock은 속성을 자동 생성하므로 숫자/문자 속성을 명시 주입한다
+    # (없으면 f"{...:.2f}" 포맷에서 TypeError 발생).
+    mic.last_record_sec = 0.0
+    mic.last_exit_reason = "ok"
+    mic.last_rms = 0.0
     return mic
 
 
@@ -174,14 +179,51 @@ class TestRunOneTurn:
         assert "tts_start" in broadcast_calls
         assert "tts_done" in broadcast_calls
 
-        # 순서 검증
+        # 순서 검증 — 자막(stt_response)은 이제 문장별로 음성과 함께 나가므로
+        # tts_start 직후, 각 문장 재생 직전에 전송된다.
         idx = {t: broadcast_calls.index(t) for t in
                ["voice_listening", "voice_processing", "user_stt", "stt_response", "tts_start", "tts_done"]}
         assert idx["voice_listening"] < idx["voice_processing"]
         assert idx["voice_processing"] < idx["user_stt"]
-        assert idx["user_stt"] < idx["stt_response"]
-        assert idx["stt_response"] < idx["tts_start"]
-        assert idx["tts_start"] < idx["tts_done"]
+        assert idx["user_stt"] < idx["tts_start"]
+        # tts_start(1회) → stt_response(문장별) → tts_done(1회)
+        assert idx["tts_start"] < idx["stt_response"]
+        assert idx["stt_response"] < idx["tts_done"]
+
+    @pytest.mark.asyncio
+    async def test_subtitle_broadcast_per_sentence(self, mock_mic, mock_stt, tts_lock):
+        """LLM 응답이 여러 문장이면 자막(stt_response)을 문장별로 보낸다.
+        각 문장 메시지는 split_sentences 결과와 일치하고, 각 문장 재생 직전에 전송된다."""
+        from server.tts_chunker import split_sentences
+
+        llm_response = "안녕! 반가워. 같이 연습해 보자!"
+        expected = split_sentences(llm_response)
+        assert len(expected) >= 2  # 다문장 응답이어야 의미 있는 검증
+
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)
+        vp.start()
+
+        stt_response_msgs = []
+
+        async def capture_broadcast(msg):
+            if msg["type"] == "stt_response":
+                stt_response_msgs.append(msg["message"])
+
+        mock_am = MagicMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        mock_tts_cache = MagicMock()
+        mock_tts_cache.get_or_create = AsyncMock(return_value="/tmp/fake.mp3")
+
+        with patch(BROADCAST_PATH, side_effect=capture_broadcast), \
+             patch("ai_core.llm_client.call_async", new=AsyncMock(return_value=llm_response)), \
+             patch("ai_core.llm_client.SYSTEM_PROMPT", "테스트 프롬프트"), \
+             patch("ai_core.tts.get_tts_cache", return_value=mock_tts_cache), \
+             patch("ai_core.audio_manager.get_audio_manager", return_value=mock_am):
+            await vp._run_one_turn()
+
+        # 문장별로 stt_response가 나가고, 통문장 1회 전송은 없어야 한다
+        assert stt_response_msgs == expected
+        assert llm_response not in stt_response_msgs
 
     @pytest.mark.asyncio
     async def test_full_turn_does_not_play_waiting_filler(self, mock_mic, mock_stt, tts_lock):
@@ -210,6 +252,8 @@ class TestRunOneTurn:
         """마이크 장치 오류는 조용히 삼키지 않고 대시보드에 알린다."""
         mic = MagicMock()
         mic.listen = AsyncMock(return_value=None)
+        mic.last_record_sec = 0.0
+        mic.last_exit_reason = "ok"
         mic.last_error = "Error querying device -1"
         vp = VoicePipeline(mic=mic, stt=mock_stt, tts_lock=tts_lock)
         vp.start()
@@ -278,6 +322,8 @@ class TestRunOneTurn:
         """mic.listen이 None 반환 → STT/LLM 호출 없음."""
         mic = MagicMock()
         mic.listen = AsyncMock(return_value=None)
+        mic.last_record_sec = 0.0
+        mic.last_exit_reason = "ok"
         vp = VoicePipeline(mic=mic, stt=mock_stt, tts_lock=tts_lock)
 
         with patch(BROADCAST_PATH, new=AsyncMock()), \

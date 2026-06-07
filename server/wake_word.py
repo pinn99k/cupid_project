@@ -29,6 +29,8 @@ WAKE_TOKENS = (
     "수아",
     "스아야",
     "스아",
+    # 영문 표기 "sia" (STT가 로마자로 적는 경우). 대소문자 무시 매칭(아래 compact_lower).
+    "sia",
 )
 
 # 질문 앞뒤로 흔히 붙는 군더더기 문자
@@ -69,18 +71,21 @@ def parse_wake_word(text: str | None) -> str | None:
         return None
 
     compact, index_map = _compact_with_index(normalized)
+    # 영문 토큰("sia")을 대소문자 무시로 잡기 위한 소문자 사본.
+    # .lower()는 한글·라틴 길이를 보존하므로 index_map 정렬이 유지된다.
+    compact_lower = compact.lower()
 
     for token in WAKE_TOKENS:
-        start = compact.find(token)
+        start = compact_lower.find(token)
         while start != -1:
-            # "러시아"처럼 단어 중간에 들어간 "시아"는 호출어로 보지 않는다.
+            # "러시아"/"russia"처럼 단어 중간에 들어간 "시아"/"sia"는 호출어로 보지 않는다.
             original_start = index_map[start]
             if (
                 original_start > 0
                 and not normalized[original_start - 1].isspace()
-                and _is_korean_or_alnum(compact[start - 1])
+                and _is_korean_or_alnum(compact_lower[start - 1])
             ):
-                start = compact.find(token, start + 1)
+                start = compact_lower.find(token, start + 1)
                 continue
 
             compact_end = start + len(token) - 1

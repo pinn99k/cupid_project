@@ -13,6 +13,40 @@ import numpy as np
 import sounddevice as sd
 
 
+# 적응형 무음 임계 상한 — ambient 가 비정상적으로 커도 발화 감지가 불가능해지지
+# 않도록 동적 임계의 절대 상한을 둔다(기존 _record_sync 의 800 상한과 동일).
+_ADAPTIVE_THRESHOLD_CAP = 800
+
+
+def compute_silence_threshold(
+    ambient_rms: float,
+    base_threshold: float,
+    factor: float = 2.0,
+    adaptive: bool = True,
+    cap: float = _ADAPTIVE_THRESHOLD_CAP,
+) -> float:
+    """무음 판정 임계값(감지 임계)을 계산하는 순수 함수.
+
+    하드웨어 의존이 없어 단위테스트 가능. _record_sync 에서 호출된다.
+
+    Args:
+        ambient_rms: 녹음 초입에서 측정한 배경소음 RMS(noise floor).
+        base_threshold: 고정 기준값(VAD_SILENCE_THRESHOLD).
+        factor: ambient 에 곱하는 계수(VAD_AMBIENT_FACTOR).
+        adaptive: False 면 적응형 보정 없이 base_threshold 를 그대로 반환(킬스위치).
+        cap: 동적 임계의 절대 상한.
+
+    Returns:
+        적용할 무음/감지 임계값(float).
+        - adaptive=False: base_threshold
+        - adaptive=True:  min(max(base_threshold, ambient_rms * factor), cap)
+    """
+    if not adaptive:
+        return float(base_threshold)
+    dynamic = max(float(base_threshold), float(ambient_rms) * float(factor))
+    return float(min(dynamic, cap))
+
+
 class MicCapture:
     """마이크 입력 캡처 + 에너지 기반 VAD."""
 
@@ -24,6 +58,8 @@ class MicCapture:
         silence_duration: float = 1.5,
         max_duration: float = 10,
         audio_playing_check=None,
+        adaptive: bool | None = None,
+        ambient_factor: float | None = None,
     ):
         """
         Args:
@@ -34,6 +70,9 @@ class MicCapture:
             max_duration: 최대 녹음 시간 (초)
             audio_playing_check: () -> bool. 오디오 재생 중 여부 확인 콜백.
                 재생 중인 프레임은 VAD 처리를 건너뜀 — 골전도 이어폰 echo 방지.
+            adaptive: 적응형 무음 임계(ambient calibration) on/off 킬스위치.
+                None=config.VAD_ADAPTIVE 사용. False면 silence_threshold 고정.
+            ambient_factor: 동적 임계 계수. None=config.VAD_AMBIENT_FACTOR 사용.
         """
         self.device_index = device_index
         self.sample_rate = sample_rate
@@ -41,6 +80,23 @@ class MicCapture:
         self.silence_duration = silence_duration
         self.max_duration = max_duration
         self._audio_playing_check = audio_playing_check
+
+        # 적응형 임계 설정 — 인자 미지정 시 config 기본값 사용.
+        # config import 실패(테스트 등)에도 안전하게 폴백.
+        if adaptive is None or ambient_factor is None:
+            try:
+                from server import config as _cfg
+                _cfg_adaptive = _cfg.VAD_ADAPTIVE
+                _cfg_factor = _cfg.VAD_AMBIENT_FACTOR
+            except Exception:
+                _cfg_adaptive = True
+                _cfg_factor = 2.0
+            if adaptive is None:
+                adaptive = _cfg_adaptive
+            if ambient_factor is None:
+                ambient_factor = _cfg_factor
+        self.adaptive = bool(adaptive)
+        self.ambient_factor = float(ambient_factor)
         # 직전 녹음의 평균 RMS(저음량 되묻기 판정용, Unit 4). 발화 없으면 0.0.
         self.last_rms: float = 0.0
         self.last_error: str | None = None
@@ -149,12 +205,23 @@ class MicCapture:
                 # 배경측정 구간에 음성이 섞여도, 조용한 프레임 기준으로 배경을 잡아
                 # 임계값이 부풀어 발화를 놓치는 문제를 방지(연속 발화 안정성 핵심).
                 bg_rms = float(np.percentile(bg_rms_samples, 25)) if bg_rms_samples else 0.0
-                adaptive_threshold = min(
-                    max(self.silence_threshold, int(bg_rms * 2.0)),
-                    800,
+                # 적응형 무음 임계(ambient calibration). 킬스위치 off면 고정 임계.
+                adaptive_threshold = compute_silence_threshold(
+                    ambient_rms=bg_rms,
+                    base_threshold=self.silence_threshold,
+                    factor=self.ambient_factor,
+                    adaptive=self.adaptive,
                 )
                 silence_exit_threshold = adaptive_threshold * 0.75
                 spike_reset_threshold  = adaptive_threshold * 0.8
+
+                print(
+                    f"[VAD] adaptive={'on' if self.adaptive else 'off'}"
+                    f" ambient_rms={bg_rms:.0f}"
+                    f" factor={self.ambient_factor}"
+                    f" → silence_threshold={adaptive_threshold:.0f}"
+                    f" (base={self.silence_threshold})"
+                )
 
                 # 청취 예산을 배경측정/에코스킵과 분리 — max_duration 전체를
                 # '실제 청취'에 사용(배경측정 0.3s가 녹음 시간을 깎지 않음).

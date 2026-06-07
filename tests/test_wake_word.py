@@ -25,6 +25,16 @@ class TestParseWakeWord:
     def test_embedded_sia_is_not_wake(self):
         assert parse_wake_word("러시아 이야기 해줘") is None
 
+    def test_english_sia_is_wake(self):
+        # 영문 표기 "sia" 호출어 (대소문자 무시)
+        assert parse_wake_word("sia 앞에 뭐 있어?") == "앞에 뭐 있어"
+        assert parse_wake_word("Sia 안녕") == "안녕"
+        assert parse_wake_word("SIA") == ""
+
+    def test_embedded_english_sia_is_not_wake(self):
+        # "russia" 안의 "sia"는 호출어 아님
+        assert parse_wake_word("russia is a country") is None
+
     def test_no_wake_returns_none(self):
         assert parse_wake_word("안녕하세요") is None
         assert parse_wake_word("앞에 뭐 있어") is None

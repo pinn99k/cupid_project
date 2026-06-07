@@ -24,6 +24,22 @@ EDGE_TTS_VOICE = "ko-KR-SunHiNeural"  # 한국어 여성, 자연스러운 발음
 
 _TTS_PROVIDERS = ("edge", "gemini", "gtts")
 
+# 일반(비데모) 경로에서 실제로 자주 나가는 고정 한국어 문구.
+# - voice_pipeline 의 되묻기(_REPROMPT_TEXTS) 표시 텍스트 / 직접응답 fallback
+# - 인사·소개 등 세션 시작 시 자주 재생되는 문구
+# 프리웜 대상이므로 너무 길지 않게, 실제 발화되는 문구 위주로 유지한다.
+PREWARM_TEXTS: list[str] = [
+    # 되묻기 (voice_pipeline._REPROMPT_TEXTS)
+    "응, 불렀어?",
+    "조금만 더 크게 말해줄래?",
+    "미안해, 한 번만 더 말해줄래?",
+    # VQA 장면 없음 직접응답 (voice_pipeline)
+    "지금은 화면에서 잘 안 보여. 잠깐 기다려 볼까?",
+    # 인사·소개 (자주 재생되는 고정 안내)
+    "안녕! 반가워! 나는 시아야.",
+    "응? 다시 한 번 말해줄래?",
+]
+
 
 def _provider_order(primary: str) -> list[str]:
     """1순위 + 나머지 폴백 순서. 알 수 없는 값이면 edge 기본."""
@@ -197,6 +213,30 @@ class TTSCache:
             print("[TTS] 캐시 HIT")
             return cached
         return await self._generate_and_cache(text)
+
+    async def prewarm(self, texts: list[str] | None = None) -> int:
+        """고정 문구를 미리 캐시에 생성(프리웜).
+
+        - 각 텍스트에 get_or_create를 호출. 이미 캐시에 있으면 건너뜀.
+        - 새로 생성한 개수를 반환.
+        - best-effort: 문구 단위로 예외를 잡아 하나 실패해도 나머지 진행.
+
+        texts 미지정 시 모듈 상수 PREWARM_TEXTS 사용.
+        """
+        texts = PREWARM_TEXTS if texts is None else texts
+        created = 0
+        for text in texts:
+            if not text:
+                continue
+            try:
+                # 이미 있으면 get()으로 즉시 HIT → get_or_create가 재생성 안 함.
+                already = self.get(text) is not None
+                filepath = await self.get_or_create(text)
+                if filepath and not already:
+                    created += 1
+            except Exception as e:
+                print(f"[TTS] 프리웜 실패(건너뜀): {text!r}: {e}")
+        return created
 
     def _hash(self, text: str) -> str:
         return hashlib.md5(text.encode("utf-8")).hexdigest()

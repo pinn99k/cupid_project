@@ -130,6 +130,9 @@ class VoicePipeline:
         # 이전엔 "오디오 시작까지"를 _turn_start 기준으로 재서 녹음시간이 섞여 9초로 보였음.
         _speech_end = time.perf_counter()
         _rec_dur = getattr(self._mic, "last_record_sec", _speech_end - _turn_start)
+        if not isinstance(_rec_dur, (int, float)):
+            # mock 등으로 숫자가 아니면 측정 불가 → 안전한 기본값으로 대체
+            _rec_dur = _speech_end - _turn_start
         _exit = getattr(self._mic, "last_exit_reason", "?")
         print(
             f"[MIC_STATE] 녹음 종료 duration={_rec_dur:.2f}s 종료원인={_exit}"
@@ -309,37 +312,39 @@ class VoicePipeline:
         if len(self._chat_history) > self._max_history:
             self._chat_history = self._chat_history[-self._max_history:]
 
-        # ── 텍스트 → 브라우저 즉시 전송 (음성보다 먼저 표시됨) ──────────
-        print(f"[PIPELINE BROADCAST] {response!r}")
-        await broadcast({
-            "type": "stt_response",
-            "message": response,
-            "timestamp": int(time.time() * 1000),
-        })
+        # ── 자막은 통문장 1회가 아니라, 문장별로 음성과 함께 끊어 보낸다.
+        # (실제 전송은 _play_sentences가 각 문장 재생 직전에 수행)
+        # 여기서는 계측만 — STT+LLM 완료까지 걸린 시간(첫 자막이 뜰 수 있는 시점).
+        print(f"[PIPELINE BROADCAST] (문장별 전송) {response!r}")
         _text_delay = time.perf_counter() - _turn_start
         print(f"[TIMING] 텍스트 표시까지={_text_delay:.2f}s (STT+LLM)")
 
-        # ── TTS 생성: lock 밖에서 먼저 실행 (병목 핵심 수정) ───────────
-        # 이전 코드: lock 안에서 TTS 생성 → 텍스트 표시 직후 1~3초 대기
-        # 수정 후:   lock 밖에서 TTS 생성 → 재생만 lock 안에서 직렬화
-        # 효과: lock 경합(danger 오디오 재생 중 등)이 있을 때 TTS 생성이 병렬 실행
-        print(f"[PIPELINE TTS INPUT] {response!r}")
+        # ── TTS: 문장 단위 분할 → 첫 문장 먼저, 나머지는 재생 중 미리 생성 ──
+        # 긴 응답을 한 번에 합성하면 첫 소리까지 오래 걸리고 발화가 부자연스럽다.
+        # 문장으로 쪼개 첫 문장만 합성되면 바로 재생 시작하고(체감지연↓),
+        # 재생 중 다음 문장을 백그라운드 합성한다(파이프라인 깊이 1).
         from ai_core.tts import get_tts_cache
+        from server.tts_chunker import split_sentences
+        _cache = get_tts_cache()
+        sentences = split_sentences(response)
+        print(f"[PIPELINE TTS INPUT] {len(sentences)}문장: {sentences!r}")
+
+        # 첫 문장은 lock 밖에서 미리 생성 (lock 경합 시에도 합성은 병렬 진행)
         _tts_start = time.perf_counter()
-        tts_filepath = await get_tts_cache().get_or_create(response)
-        _tts_elapsed = time.perf_counter() - _tts_start
+        first_fp = await _cache.get_or_create(sentences[0])
+        _tts_elapsed = time.perf_counter() - _tts_start  # 첫 문장 합성 = 첫 소리까지 지연
         _is_cache = _tts_elapsed < 0.05  # 50ms 이하면 캐시 HIT로 판정
         _rec("tts_cache_ms" if _is_cache else "tts_gen_ms", _tts_elapsed * 1000)
-        # 발화종료 기준 처리 지연 = STT+LLM+TTS (녹음시간 제외 → 체감 지연의 실제값)
+        # 발화종료 기준 처리 지연 = STT+LLM+첫문장TTS (녹음시간 제외 → 체감 지연의 실제값)
         _proc_delay = time.perf_counter() - _speech_end
         print(
-            f"[TIMING] TTS={'캐시' if _is_cache else '생성'}={_tts_elapsed:.2f}s"
-            f" → 발화종료후 오디오시작까지={_proc_delay:.2f}s (녹음 {_rec_dur:.2f}s 제외)"
+            f"[TIMING] 첫문장 TTS={'캐시' if _is_cache else '생성'}={_tts_elapsed:.2f}s"
+            f" → 발화종료후 첫소리까지={_proc_delay:.2f}s (녹음 {_rec_dur:.2f}s 제외)"
         )
 
         # ── 재생만 lock 안에서 (narration/danger와 경합 방지) ──────────
         async with self._tts_lock:
-            await self._play_tts_file(tts_filepath)
+            await self._play_sentences(sentences, first_fp, _cache)
 
         _total = time.perf_counter() - _turn_start
         _rec("text_delay_ms", _text_delay * 1000)
@@ -354,6 +359,43 @@ class VoicePipeline:
         )
         # 재생 끝 → 다음 루프에서 즉시 재청취. 마이크가 영구 차단되지 않음을 명시.
         print("[MIC_STATE] enabled (재생 완료 → 다음 턴 재청취 준비)")
+
+    async def _play_sentences(self, sentences, first_fp, cache):
+        """문장 리스트를 순차 재생. 재생 중 다음 문장을 미리 합성(파이프라인 깊이 1).
+
+        first_fp = 이미 생성된 첫 문장 파일경로(None이면 첫 문장 합성 실패).
+        한 문장 합성이 실패(None)해도 나머지 문장은 계속 재생한다.
+        """
+        from ai_core.audio_manager import get_audio_manager
+        am = self._audio_manager or get_audio_manager()
+        try:
+            await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
+            _play_start = time.perf_counter()
+            next_fp = first_fp
+            for i in range(len(sentences)):
+                # 다음 문장을 미리 합성 — 현재 문장 재생과 겹쳐 끊김을 줄인다.
+                prefetch = (
+                    asyncio.create_task(cache.get_or_create(sentences[i + 1]))
+                    if i + 1 < len(sentences) else None
+                )
+                # 이 문장 오디오를 재생하기 직전에 자막(텍스트)을 전송 →
+                # 자막과 음성이 문장 단위로 함께 끊겨 나간다.
+                await broadcast({
+                    "type": "stt_response",
+                    "message": sentences[i],
+                    "timestamp": int(time.time() * 1000),
+                })
+                if next_fp:
+                    request = am.play_path(str(next_fp), priority=PRIORITY_CONVERSATION)
+                    await am.wait(request)
+                next_fp = await prefetch if prefetch else None
+            print(f"[TIMING] 재생={time.perf_counter() - _play_start:.2f}s ({len(sentences)}문장)")
+            await self._wait_for_output_settle()
+            await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+        except Exception as e:
+            print(f"[VoicePipeline] TTS 재생 오류: {e}")
+            await broadcast({"type": "error", "message": f"TTS 오류: {type(e).__name__}", "timestamp": int(time.time() * 1000)})
+            await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
 
     async def _play_tts_file(self, filepath, interrupt: bool = False):
         """이미 생성된 TTS 파일을 재생. tts_start/tts_done broadcast.

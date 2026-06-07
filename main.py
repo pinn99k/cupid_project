@@ -7,6 +7,7 @@ SIA MVP 메인 실행 파일.
 """
 
 import asyncio
+import os
 import threading
 import time
 from collections import deque
@@ -23,7 +24,7 @@ from ai_core.audio_manager import (
     PRIORITY_NARRATION,
     get_audio_manager,
 )
-from ai_core.llm_client import init as llm_init
+from ai_core.llm_client import init as llm_init, call_async as llm_call_async, SYSTEM_PROMPT
 from ai_core.narration import narrate_async
 from ai_core.tts import get_tts_cache
 from server.main_server import (
@@ -56,6 +57,13 @@ from utils.latency_logger import log, elapsed, configure as configure_latency, g
 # ---------------------------------------------------------------------------
 # 상수
 # ---------------------------------------------------------------------------
+# 프리웜/워밍업 킬스위치. SIA_PREWARM=off/false/0/no 면 스킵(기본 on).
+def _prewarm_enabled() -> bool:
+    return os.environ.get("SIA_PREWARM", "true").strip().lower() not in (
+        "0", "false", "off", "no",
+    )
+
+
 MAX_WEBCAM_RETRIES = 5
 WEBCAM_RETRY_DELAY = 3.0        # seconds
 MAX_FRAME_FAILS = 30             # 연속 프레임 실패 허용 횟수
@@ -161,6 +169,7 @@ async def _ultrasonic_loop():
             _set_distance(state.value(time.monotonic()))
             await asyncio.sleep(ULTRASONIC_POLL_SEC)
 _voice_task: asyncio.Task | None = None
+_warmup_task: asyncio.Task | None = None
 _narration_in_progress = False
 _narration_task: asyncio.Task | None = None
 
@@ -503,11 +512,34 @@ async def _run_narration(enriched, tts, audio, stage):
 
 
 # ---------------------------------------------------------------------------
+# 프리웜 / 콜드스타트 워밍업 (백그라운드 — 서버 기동을 지연시키지 않음)
+# ---------------------------------------------------------------------------
+async def _warmup(tts):
+    """고정 문구 TTS 프리웜 + LLM 콜드스타트 더미 호출.
+
+    - 백그라운드 task로 실행 → 서버 기동(루프 시작)을 막지 않음.
+    - 전부 best-effort: 실패해도 서버 동작에 지장 없게 예외를 삼킨다.
+    """
+    try:
+        created = await tts.prewarm()
+        print(f"[PREWARM] {created}개 생성")
+    except Exception as e:
+        print(f"[PREWARM] TTS 프리웜 오류(무시): {e}")
+
+    # LLM 콜드스타트 완화 — 짧은 더미 호출 1회.
+    try:
+        await llm_call_async(SYSTEM_PROMPT, "안녕", max_tokens=16)
+        print("[PREWARM] LLM 워밍업 완료")
+    except Exception as e:
+        print(f"[PREWARM] LLM 워밍업 오류(무시): {e}")
+
+
+# ---------------------------------------------------------------------------
 # 서버 생명주기
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup():
-    global _frame_task, _ai_task, _voice_task, _ultrasonic_task, voice_pipeline
+    global _frame_task, _ai_task, _voice_task, _ultrasonic_task, _warmup_task, voice_pipeline
     print("[SIA] 초기화 시작...")
     # Phase 0 계측: print 게이팅(SIA_DEBUG) + latency_log.json 저장 위치 설정
     configure_latency(log_dir=LATENCY_LOG_DIR, verbose=SIA_DEBUG)
@@ -515,6 +547,13 @@ async def startup():
     llm_init()
     tts = get_tts_cache()
     tts.start_session(f"session_{int(time.time())}")
+    # 프리웜/워밍업 — start_session 직후 백그라운드로 (기동 지연 방지).
+    # SIA_PREWARM=off 면 스킵.
+    if _prewarm_enabled():
+        _warmup_task = asyncio.create_task(_warmup(tts))
+        _warmup_task.add_done_callback(_task_done_callback)
+    else:
+        print("[PREWARM] SIA_PREWARM=off → 프리웜/워밍업 스킵")
     # 두 루프를 독립적으로 시작
     _frame_task = asyncio.create_task(_frame_loop())
     _ai_task = asyncio.create_task(_ai_loop())
@@ -554,11 +593,11 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    global _frame_task, _ai_task, _voice_task, _ultrasonic_task, voice_pipeline
+    global _frame_task, _ai_task, _voice_task, _ultrasonic_task, _warmup_task, voice_pipeline
     print("[SIA] 서버 종료 시작...")
     if voice_pipeline:
         voice_pipeline.stop()
-    for t in (_frame_task, _ai_task, _voice_task, _ultrasonic_task):
+    for t in (_frame_task, _ai_task, _voice_task, _ultrasonic_task, _warmup_task):
         if t and not t.done():
             t.cancel()
             try:

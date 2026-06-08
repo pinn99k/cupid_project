@@ -45,7 +45,7 @@ export function useSpeechRecognition(ws) {
       if (activeRef.current && !pausedRef.current) {
         try {
           recognition.start();
-        } catch (e) {
+        } catch {
           // 이미 시작된 경우 무시
         }
       }
@@ -59,7 +59,7 @@ export function useSpeechRecognition(ws) {
     activeRef.current = true;
     pausedRef.current = false;
     // 기존 인스턴스 정리
-    try { recognitionRef.current?.stop(); } catch (e) { /* ignore */ }
+    try { recognitionRef.current?.stop(); } catch { /* ignore */ }
     const rec = _createRecognition();
     if (rec) {
       rec.start();
@@ -71,20 +71,20 @@ export function useSpeechRecognition(ws) {
   const stop = useCallback(() => {
     activeRef.current = false;
     pausedRef.current = false;
-    try { recognitionRef.current?.stop(); } catch (e) { /* ignore */ }
+    try { recognitionRef.current?.stop(); } catch { /* ignore */ }
   }, []);
 
   /** TTS 재생 시작 → STT 일시정지 */
   const pause = useCallback(() => {
     pausedRef.current = true;
-    try { recognitionRef.current?.stop(); } catch (e) { /* ignore */ }
+    try { recognitionRef.current?.stop(); } catch { /* ignore */ }
   }, []);
 
   /** TTS 재생 완료 → STT 복귀 (사용자가 켜놨을 때만) */
   const resume = useCallback(() => {
     pausedRef.current = false;
     if (activeRef.current) {
-      try { recognitionRef.current?.stop(); } catch (e) { /* ignore */ }
+      try { recognitionRef.current?.stop(); } catch { /* ignore */ }
       const rec = _createRecognition();
       if (rec) {
         rec.start();

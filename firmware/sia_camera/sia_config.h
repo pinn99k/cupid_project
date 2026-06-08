@@ -25,7 +25,7 @@
 
 // ---- 카메라 프레임 (PSRAM Enabled 전제) ----
 // 시연 화질/대역 균형. PSRAM 없으면 자동으로 더 작은 프레임으로 폴백.
-#define SIA_JPEG_QUALITY 12      // 0(최고)~63(최저). 10~14 권장
+#define SIA_JPEG_QUALITY 10      // 0(최고)~63(최저). 10~14 권장
 #define SIA_FB_COUNT 2           // PSRAM 있을 때 프레임버퍼 2개(파이프라인)
 
 #endif  // SIA_CONFIG_H

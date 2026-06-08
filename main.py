@@ -51,7 +51,8 @@ from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX, CAM_SOURCE,
                            VOICE_OUTPUT_SETTLE_SEC, VOICE_REPROMPT_COOLDOWN_SEC,
                            ULTRASONIC_URL, ULTRASONIC_POLL_SEC, ULTRASONIC_OFFSET_CM,
                            ULTRASONIC_TIMEOUT_SEC, ULTRASONIC_STALE_SEC,
-                           ULTRASONIC_BUFFER_N, SIA_DEBUG, LATENCY_LOG_DIR)
+                           ULTRASONIC_BUFFER_N, SIA_DEBUG, LATENCY_LOG_DIR,
+                           MANUAL_RECORDING_MODE, MANUAL_RECORDING_MAX_SEC)
 from server.mic import MicCapture
 from server.stt import create_stt_client
 from server.voice_pipeline import VoicePipeline
@@ -593,7 +594,11 @@ async def startup():
         max_duration=VAD_MAX_DURATION,
         # TTS/narration 재생 중 골전도 이어폰 echo → silence_reset 방지
         audio_playing_check=get_audio_manager().is_playing,
+        manual_max_sec=MANUAL_RECORDING_MAX_SEC,
     )
+    if MANUAL_RECORDING_MODE:
+        mic.start_manual_capture_stream()
+        print(f"[MANUAL] enabled max_sec={MANUAL_RECORDING_MAX_SEC}")
     voice_pipeline = VoicePipeline(
         mic=mic,
         stt=stt,

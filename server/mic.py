@@ -7,6 +7,8 @@
 import asyncio
 from collections import deque
 import io
+import threading
+import time
 import wave
 
 import numpy as np
@@ -60,6 +62,7 @@ class MicCapture:
         audio_playing_check=None,
         adaptive: bool | None = None,
         ambient_factor: float | None = None,
+        manual_max_sec: int = 15,
     ):
         """
         Args:
@@ -106,6 +109,22 @@ class MicCapture:
         # 최근 10회 종료 원인 통계 (silence / max_duration)
         self._exit_stats: deque[str] = deque(maxlen=10)
 
+        # ── 수동 녹음 모드 상태 ─────────────────────────────────────────
+        # 항상 켜진 캡처 스레드가 프레임을 읽어 pre-roll(200ms)을 유지하고,
+        # _manual_active 동안에는 _manual_frames 에 누적한다. (VAD 미사용)
+        self._manual_max_sec = manual_max_sec
+        self._manual_lock = threading.Lock()
+        self._manual_active = False
+        self._manual_frames: list[np.ndarray] = []
+        _chunk = 1024
+        self._manual_preroll: deque[np.ndarray] = deque(
+            maxlen=max(1, int(0.2 * self.sample_rate / _chunk))  # 200ms
+        )
+        self._manual_stream_running = False
+        self._manual_stream_thread: threading.Thread | None = None
+        self._manual_start_t = 0.0
+        self._manual_hardcap_hit = False
+
     # ------------------------------------------------------------------
     # 공개 비동기 인터페이스
     # ------------------------------------------------------------------
@@ -113,6 +132,97 @@ class MicCapture:
     async def listen(self) -> bytes | None:
         """발화를 감지하고 녹음한 WAV bytes를 반환."""
         return await asyncio.to_thread(self._record_sync)
+
+    # ------------------------------------------------------------------
+    # 수동 녹음 모드 (운영자 토글 버튼)
+    # ------------------------------------------------------------------
+
+    def start_manual_capture_stream(self) -> None:
+        """수동 모드 진입 시 1회 호출 — 항상 켜진 캡처 스레드를 띄운다.
+        녹음 중이 아닐 때도 pre-roll(200ms)을 유지해, start 시 직전 음성을 포함한다."""
+        if self._manual_stream_running:
+            return
+        self._manual_stream_running = True
+        self._manual_stream_thread = threading.Thread(
+            target=self._manual_stream_loop, name="mic-manual", daemon=True
+        )
+        self._manual_stream_thread.start()
+
+    def stop_manual_capture_stream(self) -> None:
+        """캡처 스레드 종료(셧다운용)."""
+        self._manual_stream_running = False
+        t = self._manual_stream_thread
+        if t and t.is_alive():
+            t.join(timeout=2)
+
+    def _manual_stream_loop(self) -> None:
+        """캡처 스레드 본체. 항상 프레임을 읽어 pre-roll 유지 + 녹음 중엔 누적."""
+        chunk_size = 1024
+        try:
+            with sd.InputStream(
+                device=self.device_index,
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=chunk_size,
+            ) as stream:
+                while self._manual_stream_running:
+                    try:
+                        chunk, _ = stream.read(chunk_size)
+                    except Exception:
+                        break
+                    chunk = chunk.flatten()
+                    with self._manual_lock:
+                        if self._manual_active:
+                            self._manual_frames.append(chunk)
+                            # 안전 하드캡: 운영자/타이머가 못 멈춰도 버퍼 폭주 방지
+                            if time.monotonic() - self._manual_start_t > self._manual_max_sec:
+                                self._manual_hardcap_hit = True
+                                self._manual_active = False
+                        else:
+                            self._manual_preroll.append(chunk)
+        except Exception as e:
+            self.last_error = self._format_recording_error(e)
+            print(f"[MicCapture] 수동 캡처 스트림 오류: {self.last_error}")
+        finally:
+            self._manual_stream_running = False
+
+    def start_manual_recording(self) -> bool:
+        """녹음 즉시 시작(VAD 끔). pre-roll 200ms 포함. 이미 녹음 중이면 False."""
+        with self._manual_lock:
+            if self._manual_active:
+                return False
+            self._manual_frames = list(self._manual_preroll)  # 직전 200ms 포함
+            self._manual_start_t = time.monotonic()
+            self._manual_hardcap_hit = False
+            self._manual_active = True
+        self.last_error = None
+        return True
+
+    def stop_manual_recording(self) -> bytes | None:
+        """녹음 즉시 종료 → WAV bytes 반환(없으면 None)."""
+        with self._manual_lock:
+            self._manual_active = False
+            frames = self._manual_frames
+            self._manual_frames = []
+        if not frames:
+            self.last_record_sec = 0.0
+            self.last_exit_reason = "manual_empty"
+            return None
+        audio = np.concatenate(frames, axis=0)
+        self.last_record_sec = len(audio) / self.sample_rate
+        self.last_exit_reason = "manual"
+        # 발화 평균 RMS(저음량 판정 등 호환용)
+        try:
+            self.last_rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+        except Exception:
+            self.last_rms = 0.0
+        return self._to_wav_bytes(audio)
+
+    @property
+    def is_manual_recording(self) -> bool:
+        with self._manual_lock:
+            return self._manual_active
 
     # ------------------------------------------------------------------
     # 내부 동기 로직

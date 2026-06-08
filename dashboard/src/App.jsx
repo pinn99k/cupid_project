@@ -8,10 +8,12 @@ function App() {
   const [stage, setStage] = useState(1)
 
   const useWs = useWebSocket(`ws://${window.location.hostname}:8000/ws`)
-  const { ws, messages, serverState, connected, send, clearMessages } = useWs
+  const { messages, serverState, connected, send, clearMessages } = useWs
 
   useEffect(() => {
-    if (serverState.stage) setStage(serverState.stage)
+    if (!serverState.stage) return undefined
+    const timer = window.setTimeout(() => setStage(serverState.stage), 0)
+    return () => window.clearTimeout(timer)
   }, [serverState])
 
   // 세션 리셋 시 메시지 초기화
@@ -47,7 +49,6 @@ function App() {
       connected={connected}
       stage={stage}
       setStage={setStage}
-      ws={ws}
       useWs={useWs}
       onExit={handleExit}
     />

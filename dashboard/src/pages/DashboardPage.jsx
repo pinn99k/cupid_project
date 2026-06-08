@@ -7,12 +7,14 @@ import ChatPanel from '../components/ChatPanel.jsx'
 import STTInput from '../components/STTInput.jsx'
 import ControlBar from '../components/ControlBar.jsx'
 import FallbackPanel from '../components/FallbackPanel.jsx'
+import MicToggleButton from '../components/MicToggleButton.jsx'
 
-function DashboardPage({ send, connected, stage, setStage, ws, useWs, onExit }) {
+function DashboardPage({ send, connected, stage, setStage, useWs, onExit }) {
   // useWebSocket에서 분류된 정보 추출
-  const { messages, voiceState, latestDanger, latestObjects, serverState } = useWs || {
+  const { messages, voiceState, manualRecordingState, latestDanger, latestObjects, serverState } = useWs || {
     messages: [],
     voiceState: 'idle',
+    manualRecordingState: 'idle',
     latestDanger: null,
     latestObjects: [],
     serverState: {},
@@ -38,6 +40,11 @@ function DashboardPage({ send, connected, stage, setStage, ws, useWs, onExit }) 
           <CameraView stage={stage} objects={latestObjects} danger={latestDanger} />
           <div style={{ padding: '12px 16px 16px 16px' }}>
             <DirectionPanel objects={latestObjects} />
+            <MicToggleButton
+              state={manualRecordingState}
+              connected={connected}
+              send={send}
+            />
           </div>
         </div>
 

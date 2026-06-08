@@ -10,14 +10,14 @@ from ai_core.audio_manager import PRIORITY_CONVERSATION, PRIORITY_FALLBACK
 from server.mic import MicCapture
 from server.stt import STTClient
 from server.websocket_handler import broadcast
-from server.config import DEMO_MODE
+from server.config import DEMO_MODE, MANUAL_RECORDING_MODE
 from utils.latency_logger import record as _rec
 
 # Vision 질문 분류기: 객체 인식 결과가 필요한 질문 패턴
 # 이 패턴에 해당하면 → LLM 캐시 제외 + 무조건 VQA(YOLO 장면) 모드로 처리
 # "앞에 뭐 있어", "사람 있어", "의자 있어?" 등 카메라 확인이 필요한 모든 질문
 _VISION_RE = re.compile(
-    r"뭐.*있|있냐|있어|보여|보이|위험|사람|계단|앞|왼|오른|장애물|찾|감지|물체|뭐가|주변|근처"
+    r"뭐.*있|있냐|있어|보여|보이|위험|사람|계단|앞|왼|오른|장애물|찾|감지|물체|뭐가|주변|근처|어느|어디|쪽|가야|이동|길"
 )
 
 # VQA 에서 허용하는 장면 최대 나이.
@@ -91,6 +91,89 @@ class VoicePipeline:
         # 현재 학습 단계 — main_server가 start_learning 시 갱신.
         # DEMO_MODE는 수용(1)에서만 적용, 방향(2)+는 실제 LLM/VQA 사용.
         self._current_stage = 1
+        self._recording_state = "idle"
+        self._manual_turn_lock = asyncio.Lock()
+        self._manual_safety_task: asyncio.Task | None = None
+
+    async def _set_recording_state(self, state: str):
+        """운영자 마이크 토글 상태를 대시보드에 동기화."""
+        if self._recording_state == state:
+            return
+        old = self._recording_state
+        self._recording_state = state
+        print(f"[WS_STATE] recording_state changed: {old} → {state}")
+        await broadcast({
+            "type": "recording_state",
+            "state": state,
+            "timestamp": int(time.time() * 1000),
+        })
+
+    async def _manual_safety_timeout(self):
+        """수동 녹음 안전 상한 도달 시 자동 stop."""
+        max_sec = getattr(self._mic, "_manual_max_sec", 15)
+        await asyncio.sleep(max_sec)
+        if self._recording_state != "recording":
+            return
+        print(f"[MANUAL] safety_timeout at={int(time.time() * 1000)}ms ({max_sec}초 초과)")
+        print("⚠️ 안전 상한 도달 자동 종료")
+        await self.on_manual_stop_recording(safety_timeout=True)
+
+    async def on_manual_start_recording(self) -> bool:
+        """WS start_recording 이벤트: VAD 없이 즉시 녹음 시작."""
+        if not MANUAL_RECORDING_MODE:
+            print("[MANUAL] start_recording ignored: MANUAL_RECORDING_MODE=false")
+            return False
+        if self._recording_state != "idle" or self._manual_turn_lock.locked():
+            print(f"[MANUAL] start_recording ignored: state={self._recording_state}")
+            return False
+        self._mic.start_manual_capture_stream()
+        ok = self._mic.start_manual_recording()
+        if not ok:
+            print("[MANUAL] start_recording ignored: mic already recording")
+            return False
+        self._active = True
+        print(f"[MANUAL] start_recording at={int(time.time() * 1000)}ms")
+        await self._set_recording_state("recording")
+        if self._manual_safety_task and not self._manual_safety_task.done():
+            self._manual_safety_task.cancel()
+        self._manual_safety_task = asyncio.create_task(self._manual_safety_timeout())
+        return True
+
+    async def on_manual_stop_recording(self, safety_timeout: bool = False) -> bool:
+        """WS stop_recording 이벤트: 녹음 종료 후 기존 STT/DEMO 응답 흐름 실행."""
+        if not MANUAL_RECORDING_MODE:
+            print("[MANUAL] stop_recording ignored: MANUAL_RECORDING_MODE=false")
+            return False
+        if self._recording_state != "recording" and not safety_timeout:
+            print(f"[MANUAL] stop_recording ignored: state={self._recording_state}")
+            return False
+        current_task = asyncio.current_task()
+        if (
+            self._manual_safety_task
+            and self._manual_safety_task is not current_task
+            and not self._manual_safety_task.done()
+        ):
+            self._manual_safety_task.cancel()
+        async with self._manual_turn_lock:
+            await self._set_recording_state("processing")
+            stop_at = time.perf_counter()
+            audio_data = await asyncio.to_thread(self._mic.stop_manual_recording)
+            rec_dur = getattr(self._mic, "last_record_sec", 0.0)
+            print(
+                f"[MANUAL] stop_recording at={int(time.time() * 1000)}ms"
+                f" duration={rec_dur:.2f}s"
+            )
+            try:
+                await self._process_recorded_audio(
+                    audio_data=audio_data,
+                    turn_start=stop_at - rec_dur,
+                    speech_end=stop_at,
+                    rec_dur=rec_dur,
+                    exit_reason="safety_timeout" if safety_timeout else "manual",
+                )
+            finally:
+                await self._set_recording_state("idle")
+        return True
 
     async def run(self):
         """메인 턴 루프. 한 번에 한 턴만 실행."""
@@ -99,6 +182,10 @@ class VoicePipeline:
 
         while self._running:
             try:
+                if MANUAL_RECORDING_MODE:
+                    self._mic.start_manual_capture_stream()
+                    await asyncio.sleep(0.3)
+                    continue
                 await self._run_one_turn()
                 # 빈 턴(발화 없음/인식 불가 등)이 I/O 대기 없이 즉시 끝나도
                 # 이벤트 루프에 제어를 양보 — CPU 스핀 및 다른 태스크 굶김 방지.
@@ -143,6 +230,22 @@ class VoicePipeline:
                if _exit == "max_duration" else "")
         )
         print("[MIC_STATE] disabled (이유: 처리/재생 시작 — 이 구간 새 발화 수집 안 됨)")
+
+        await self._process_recorded_audio(
+            audio_data=audio_data,
+            turn_start=_turn_start,
+            speech_end=_speech_end,
+            rec_dur=_rec_dur,
+            exit_reason=_exit,
+        )
+
+    async def _process_recorded_audio(self, audio_data, turn_start: float, speech_end: float, rec_dur: float, exit_reason: str):
+        """녹음된 WAV bytes를 STT→응답 재생까지 처리. 자동 VAD/수동 토글 공용."""
+
+        _turn_start = turn_start
+        _speech_end = speech_end
+        _rec_dur = rec_dur
+        _exit = exit_reason
 
         if audio_data is None:
             mic_error = getattr(self._mic, "last_error", None)
@@ -257,13 +360,20 @@ class VoicePipeline:
                     and scene_age_ms <= _MAX_SCENE_AGE_MS
                 )
                 if scene_valid:
+                    from ai_core.navigation_hint import get_navigation_hint
                     from ai_core.scene_text import scene_to_korean
                     scene_text = scene_to_korean(scene)
-                    base_prompt = f"{VQA_PROMPT}\n\n[현재 장면] {scene_text}"
+                    nav_hint = get_navigation_hint(scene.get("objects", []))
+                    base_prompt = (
+                        f"{VQA_PROMPT}\n\n"
+                        f"[현재 장면] {scene_text}\n"
+                        f"[보행 안내 힌트]\n{nav_hint['prompt_text']}"
+                    )
                     print(
                         f"[VoicePipeline] VQA 모드(Vision 질문, 장면 경과={scene_age_ms:.0f}ms)"
                         f"  system={len(base_prompt)}자 user={len(text)}자"
                         f" scene={len(scene_text)}자: {scene_text[:80]!r}"
+                        f" nav={nav_hint!r}"
                     )
                 else:
                     age_str = f"{scene_age_ms:.0f}ms" if scene is not None else "없음"
@@ -273,13 +383,20 @@ class VoicePipeline:
                     )
                     response = "지금은 화면에서 잘 안 보여. 잠깐 기다려 볼까?"
             elif fresh:
+                from ai_core.navigation_hint import get_navigation_hint
                 from ai_core.scene_text import scene_to_korean
                 scene_text = scene_to_korean(scene)
-                base_prompt = f"{VQA_PROMPT}\n\n[현재 장면] {scene_text}"
+                nav_hint = get_navigation_hint(scene.get("objects", []))
+                base_prompt = (
+                    f"{VQA_PROMPT}\n\n"
+                    f"[현재 장면] {scene_text}\n"
+                    f"[보행 안내 힌트]\n{nav_hint['prompt_text']}"
+                )
                 print(
                     f"[VoicePipeline] VQA 모드(신선한 장면, 경과={scene_age_ms:.0f}ms)"
                     f"  system={len(base_prompt)}자 user={len(text)}자"
                     f" scene={len(scene_text)}자: {scene_text[:80]!r}"
+                    f" nav={nav_hint!r}"
                 )
             else:
                 base_prompt = SYSTEM_PROMPT
@@ -375,6 +492,7 @@ class VoicePipeline:
         from ai_core.audio_manager import get_audio_manager
         am = self._audio_manager or get_audio_manager()
         try:
+            await self._set_recording_state("speaking")
             await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
             _play_start = time.perf_counter()
             next_fp = first_fp
@@ -402,12 +520,16 @@ class VoicePipeline:
             print(f"[VoicePipeline] TTS 재생 오류: {e}")
             await broadcast({"type": "error", "message": f"TTS 오류: {type(e).__name__}", "timestamp": int(time.time() * 1000)})
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+        finally:
+            if MANUAL_RECORDING_MODE:
+                await self._set_recording_state("idle")
 
     async def _play_tts_file(self, filepath, interrupt: bool = False):
         """이미 생성된 TTS 파일을 재생. tts_start/tts_done broadcast.
         interrupt=True면 진행 중인 재생/큐를 즉시 중단하고 이 파일을 재생(데모 단일재생)."""
         try:
             from ai_core.audio_manager import get_audio_manager
+            await self._set_recording_state("speaking")
             await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
             if filepath:
                 am = self._audio_manager or get_audio_manager()
@@ -423,21 +545,25 @@ class VoicePipeline:
             print(f"[VoicePipeline] TTS 재생 오류: {e}")
             await broadcast({"type": "error", "message": f"TTS 오류: {type(e).__name__}", "timestamp": int(time.time() * 1000)})
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+        finally:
+            if MANUAL_RECORDING_MODE:
+                await self._set_recording_state("idle")
 
     async def _run_demo_response(self, question: str, turn_start: float):
         """DEMO_MODE 전용: LLM/TTS 없이 키워드+장면으로 사전 음성 즉시 재생."""
-        from server.demo_responses import find_response, voice_path
+        from server.demo_responses import demo_display_text, find_response, voice_path
 
         scene = None
         if self._scene_provider:
             scene, _scene_ts = self._scene_provider()
         scene_objects = scene.get("objects", []) if isinstance(scene, dict) else []
         voice_file = find_response(question, scene_objects, self._voice_history)
+        display_text = demo_display_text(voice_file)
         self._voice_history.append(voice_file)
 
         await broadcast({
             "type": "stt_response",
-            "message": f"[DEMO] {voice_file}",
+            "message": display_text,
             "audio_file": voice_file,
             "timestamp": int(time.time() * 1000),
         })
@@ -459,7 +585,10 @@ class VoicePipeline:
         async with self._tts_lock:
             await self._play_tts_file(filepath, interrupt=True)
 
-        print(f"[DEMO] {question!r} → {voice_file} (발화종료후 {time.perf_counter() - turn_start:.2f}s)")
+        print(
+            f"[DEMO] {question!r} → {voice_file} / {display_text!r}"
+            f" (발화종료후 {time.perf_counter() - turn_start:.2f}s)"
+        )
 
     async def _speak(self, text: str):
         """TTS 생성 + 오디오 재생 (reprompt 경로용 — _play_tts_file 직접 호출 불가 시 사용)."""
@@ -472,6 +601,7 @@ class VoicePipeline:
             filepath = await tts.get_or_create(text)
             print(f"[VoicePipeline] TTS 준비 완료: {time.perf_counter() - tts_started:.2f}초")
 
+            await self._set_recording_state("speaking")
             await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
 
             if filepath:
@@ -488,6 +618,9 @@ class VoicePipeline:
             print(f"[VoicePipeline] TTS 오류: {e}")
             await broadcast({"type": "error", "message": f"TTS 오류: {type(e).__name__}", "timestamp": int(time.time() * 1000)})
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+        finally:
+            if MANUAL_RECORDING_MODE:
+                await self._set_recording_state("idle")
 
     async def _play_reprompt(self, audio_file: str, reason: str):
         """되묻기 사전녹음 재생 (Unit 4) — LLM 미사용 즉답.
@@ -518,6 +651,7 @@ class VoicePipeline:
             return  # 오디오 매니저 없으면(테스트 등) 분기만 수행
         try:
             async with self._tts_lock:
+                await self._set_recording_state("speaking")
                 await broadcast({"type": "tts_start", "timestamp": int(time.time() * 1000)})
                 request = self._audio_manager.play(audio_file, priority=PRIORITY_FALLBACK)
                 await self._audio_manager.wait(request)
@@ -526,6 +660,9 @@ class VoicePipeline:
         except Exception as e:
             print(f"[VoicePipeline] 되묻기 재생 오류: {e}")
             await broadcast({"type": "tts_done", "timestamp": int(time.time() * 1000)})
+        finally:
+            if MANUAL_RECORDING_MODE:
+                await self._set_recording_state("idle")
 
     async def _wait_for_output_settle(self):
         """스피커 출력의 꼬리가 마이크에 되먹임되지 않도록 락 안에서 잠깐 대기."""
@@ -613,6 +750,12 @@ class VoicePipeline:
         """파이프라인 완전 중지 (루프 종료)."""
         self._active = False
         self._running = False
+        if self._manual_safety_task and not self._manual_safety_task.done():
+            self._manual_safety_task.cancel()
+        try:
+            self._mic.stop_manual_capture_stream()
+        except Exception:
+            pass
 
     def reset(self):
         """세션 리셋 — 히스토리 + 응답 캐시 + demo voice history 초기화."""
@@ -620,6 +763,12 @@ class VoicePipeline:
         self._response_cache.clear()
         self._voice_history.clear()
         self._consecutive_fails = 0
+        if MANUAL_RECORDING_MODE:
+            try:
+                self._mic.stop_manual_recording()
+            except Exception:
+                pass
+            self._recording_state = "idle"
         # Note: _running은 stop()으로 별도 제어
 
     @property
@@ -635,3 +784,8 @@ class VoicePipeline:
     def voice_history(self) -> list[str]:
         """시연 세션 동안 재생한 demo voice 파일명."""
         return list(self._voice_history)
+
+    @property
+    def recording_state(self) -> str:
+        """대시보드 운영자 마이크 버튼 상태."""
+        return self._recording_state

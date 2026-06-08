@@ -19,6 +19,25 @@ SCENARIO_KEYWORDS: dict[str, str] = {
 _TRAFFIC_LABELS = {"traffic light", "traffic_light", "stop light", "signal", "신호등"}
 _PERSON_LABELS = {"person", "사람", "friend", "친구"}
 
+DEMO_TEXT_MAP: dict[str, str] = {
+    "greeting.wav": "안녕! 반가워! 나는 시아야.",
+    "intro.wav": (
+        "나는 시아야, 시각장애 친구들이 안전하게 걸을 수 있게 도와주는 AI 친구야. "
+        "카메라로 주변을 보고 앞에 위험한 게 있으면 알려줄게!"
+    ),
+    "lets_go.wav": "응! 같이 가자, 흰지팡이 잘 잡고 천천히 가볼까?",
+    "traffic_light.wav": "앞에 신호등이 보여! 기둥에 부딪히지 않게 오른쪽으로 살짝 비켜갈까?",
+    "person_left_far.wav": "왼쪽에 친구가 보여! 오른쪽으로 가볼까?",
+    "person_center_far.wav": "앞에 친구가 보여! 잠깐 멈춰서 비켜갈 길을 찾아볼까?",
+    "person_right_far.wav": "오른쪽에 친구가 보여! 왼쪽으로 가볼까?",
+    "arrival.wav": "다 왔어! 정말 잘했어!",
+    "all_clear.wav": "앞에 아무것도 없어! 안전해, 천천히 가도 돼.",
+    "fallback.wav": "응? 다시 한 번 말해줄래?",
+    "person_left_close.wav": "잠깐! 왼쪽에 친구가 가까이 있어! 오른쪽으로 비켜가볼까?",
+    "person_center_close.wav": "잠깐 멈춰! 앞에 친구가 너무 가까워!",
+    "person_right_close.wav": "잠깐! 오른쪽에 친구가 가까이 있어! 왼쪽으로 비켜가볼까?",
+}
+
 
 def find_response(question: str, scene_objects, voice_history: Iterable[str] | None = None) -> str:
     """질문을 키워드로 매칭해 재생할 demo voice 파일명을 반환."""
@@ -39,16 +58,29 @@ def find_scene_voice(detected_objects, voice_history: Iterable[str] | None = Non
 
     close_person = _select_person(objects, close=True)
     if close_person:
-        return f"person_{get_position(close_person.get('bbox'))}_close.wav"
+        return f"person_{get_direction(close_person)}_close.wav"
 
     if "traffic_light.wav" not in history and any(_is_traffic_light(obj) for obj in objects):
         return "traffic_light.wav"
 
     far_person = _select_person(objects, close=False)
     if far_person:
-        return f"person_{get_position(far_person.get('bbox'))}_far.wav"
+        return f"person_{get_direction(far_person)}_far.wav"
 
     return "all_clear.wav"
+
+
+def demo_display_text(filename: str) -> str:
+    """대시보드 채팅에 표시할 자연어 문장. 음성 파일명은 노출하지 않는다."""
+    return DEMO_TEXT_MAP.get(filename, DEMO_TEXT_MAP["fallback.wav"])
+
+
+def get_direction(obj: dict) -> str:
+    """YOLO enriched 객체의 direction을 우선 사용하고, 없으면 bbox로 보정."""
+    direction = str(obj.get("direction", "")).lower()
+    if direction in {"left", "center", "right"}:
+        return direction
+    return get_position(obj.get("bbox"))
 
 
 def get_position(bbox) -> str:

@@ -9,12 +9,10 @@ const STAGE_LABELS = {
 // 카메라 박스 비율 — 박스 자체를 실제 영상 비율로 만들어 왜곡·잘림·까만띠 없이 꽉 채운다.
 // 실제 스트림 해상도를 img onLoad에서 읽어 동적으로 맞춘다(회전 0/90/180/270 무관).
 // 로드 전 기본값은 ESP32-CAM 기본 출력(가로 VGA 640x480 = 4:3).
-const DEFAULT_ASPECT = "4 / 3";
 
 export default function CameraView({ stage, objects = [], danger }) {
   const [retryKey, setRetryKey] = useState(0);
   const [imgError, setImgError] = useState(false);
-  const [aspect, setAspect] = useState(DEFAULT_ASPECT);
   const videoUrl = useMemo(
     () => `http://${window.location.hostname}:8000/video_feed?retry=${retryKey}`,
     [retryKey],
@@ -48,15 +46,16 @@ export default function CameraView({ stage, objects = [], danger }) {
     <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
       {/* 카메라 박스: 영상 비율(세로)로 만들어 왜곡·잘림·까만띠 없이 꽉 채움.
           가용 높이를 채우고 가로는 비율대로 자동. img·bbox·오버레이 모두 이 박스 기준 → 정렬 일치. */}
-      <div style={{ position: "relative", height: "100%", aspectRatio: aspect, maxWidth: "100%", background: "#1E1E1E", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{position: "relative", width: "100%", height: "100%", background: "#1E1E1E", borderRadius: 8, overflow: "hidden"}}>
         {!imgError ? (
-          <img
+         <img
             src={videoUrl}
-            style={{ display: "block", width: "100%", height: "100%", objectFit: "contain" }}
-            onLoad={(e) => {
-              const w = e.target.naturalWidth;
-              const h = e.target.naturalHeight;
-              if (w && h) setAspect(`${w} / ${h}`);
+            style={{
+              display: "block",
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              transform: "rotate(-90deg)",
             }}
             onError={() => setImgError(true)}
             alt="camera feed"

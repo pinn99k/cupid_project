@@ -1,6 +1,6 @@
 """시연용 키워드/장면 응답 선택 테스트."""
 
-from server.demo_responses import find_response, find_scene_voice, get_position
+from server.demo_responses import demo_display_text, find_response, find_scene_voice, get_direction, get_position
 
 
 def person(x, w=0.2, h=0.5, ratio=None):
@@ -22,6 +22,17 @@ def test_get_position_from_bbox_center_x():
     assert get_position({"x": 0.0, "w": 0.2}) == "left"
     assert get_position({"x": 0.4, "w": 0.2}) == "center"
     assert get_position({"x": 0.75, "w": 0.2}) == "right"
+
+
+def test_get_direction_prefers_yolo_direction():
+    assert get_direction({"direction": "right", "bbox": {"x": 0.0, "w": 0.2}}) == "right"
+    assert get_direction({"direction": "left", "bbox": {"x": 0.75, "w": 0.2}}) == "left"
+
+
+def test_demo_display_text_hides_filename():
+    text = demo_display_text("greeting.wav")
+    assert "greeting.wav" not in text
+    assert "시아" in text
 
 
 def test_scene_close_person_priority():
@@ -48,3 +59,9 @@ def test_far_person_after_traffic_seen():
 
 def test_scene_aware_keyword_uses_scene():
     assert find_response("앞에 뭐 있어", [person(0.02, ratio=0.1)], []) == "person_left_far.wav"
+
+
+def test_scene_aware_uses_object_direction_for_walking_guidance():
+    obj = person(0.4, ratio=0.1)
+    obj["direction"] = "right"
+    assert find_response("앞에 뭐 있어", [obj], []) == "person_right_far.wav"

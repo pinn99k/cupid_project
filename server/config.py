@@ -69,6 +69,12 @@ SIA_DEBUG: bool = os.getenv("SIA_DEBUG", "").lower() in ("1", "true", "yes", "on
 # 시연 모드: 호출어 뒤 질문을 키워드/YOLO 장면으로 매칭하고 사전 녹음 음성을 즉시 재생.
 # true면 LLM/Gemini TTS 경로를 우회한다.
 DEMO_MODE: bool = os.getenv("DEMO_MODE", "").lower() in ("1", "true", "yes", "on")
+
+# 수동 녹음 모드: 운영자가 토글 버튼/Space로 녹음 시작·종료를 직접 제어(VAD 의존 제거).
+# 부스 소음으로 VAD가 발화끝을 못 잡는 문제를 회피한다.
+MANUAL_RECORDING_MODE: bool = os.getenv("MANUAL_RECORDING_MODE", "").lower() in ("1", "true", "yes", "on")
+# 수동 녹음 안전 상한(초) — 운영자가 종료를 깜빡해도 이 시간 후 자동 종료.
+MANUAL_RECORDING_MAX_SEC: int = int(os.getenv("MANUAL_RECORDING_MAX_SEC", "15"))
 # 종료 시 latency_log.json 저장 위치.
 LATENCY_LOG_DIR: str = os.getenv("LATENCY_LOG_DIR", "logs")
 

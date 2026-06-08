@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const STAGE_LABELS = {
   1: "LIVE · 수용 단계",
@@ -13,18 +13,24 @@ const STAGE_LABELS = {
 export default function CameraView({ stage, objects = [], danger }) {
   const [retryKey, setRetryKey] = useState(0);
   const [imgError, setImgError] = useState(false);
-  // 박스 비율을 실제 스트림 해상도에 맞춤(onLoad). 백엔드가 이미 회전해 똑바로 주므로
-  // CSS 회전 불필요 → 확대/검은여백 없음. 기본값 3/4(세로), onLoad에서 실제값 반영.
-  const [videoAspect, setVideoAspect] = useState(3 / 4);
+  const imgRef = useRef(null);
+  // 박스 비율을 실제 스트림 해상도에 맞춤. 기본값은 ESP32-CAM 가로형 VGA(640x480 = 4:3).
+  const [videoAspect, setVideoAspect] = useState(4 / 3);
   const videoUrl = useMemo(
     () => `http://${window.location.hostname}:8000/video_feed?retry=${retryKey}`,
     [retryKey],
   );
 
-  const handleImgLoad = (e) => {
-    const { naturalWidth: w, naturalHeight: h } = e.target;
-    if (w > 0 && h > 0) setVideoAspect(w / h);
-  };
+  const syncNaturalAspect = useCallback(() => {
+    const img = imgRef.current;
+    if (!img) return;
+    const { naturalWidth: w, naturalHeight: h } = img;
+    if (w <= 0 || h <= 0) return;
+    const next = w / h;
+    setVideoAspect((prev) => (Math.abs(prev - next) > 0.01 ? next : prev));
+  }, []);
+
+  const handleImgLoad = () => syncNaturalAspect();
 
   useEffect(() => {
     if (!imgError) return undefined;
@@ -34,6 +40,11 @@ export default function CameraView({ stage, objects = [], danger }) {
     }, 1500);
     return () => window.clearTimeout(timer);
   }, [imgError]);
+
+  useEffect(() => {
+    const timer = window.setInterval(syncNaturalAspect, 500);
+    return () => window.clearInterval(timer);
+  }, [retryKey, syncNaturalAspect]);
 
   const overlayBase = {
     position: "absolute",
@@ -52,17 +63,17 @@ export default function CameraView({ stage, objects = [], danger }) {
   return (
     // 바깥 래퍼: 가용 공간을 차지하고 카메라 박스를 가운데 정렬(좌우는 페이지 배경).
     <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-      {/* 카메라 박스: 실제 영상 비율로 만들어 왜곡·잘림·확대·검은여백 없이 꽉 채움.
-          가용 높이를 채우고 가로는 비율대로 자동. img·bbox·오버레이 모두 이 박스 기준 → 정렬 일치. */}
-      <div style={{ position: "relative", height: "100%", aspectRatio: String(videoAspect), maxWidth: "100%", background: "#1E1E1E", borderRadius: 8, overflow: "hidden" }}>
+      {/* 카메라 박스: 실제 영상 비율 그대로 유지. img·bbox·오버레이 모두 이 박스 기준 → 정렬 일치. */}
+      <div style={{ position: "relative", width: "100%", maxHeight: "100%", aspectRatio: String(videoAspect), background: "#1E1E1E", borderRadius: 8, overflow: "hidden" }}>
         {!imgError ? (
           <img
+            ref={imgRef}
             src={videoUrl}
             style={{
               display: "block",
               width: "100%",
               height: "100%",
-              objectFit: "cover",
+              objectFit: "contain",
             }}
             onLoad={handleImgLoad}
             onError={() => setImgError(true)}

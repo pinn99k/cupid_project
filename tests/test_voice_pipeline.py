@@ -434,6 +434,8 @@ class TestRunOneTurn:
             if call.args[0]["type"] == "stt_response"
         ][0]
         assert response["audio_file"] == "greeting.wav"
+        assert response["message"] == "안녕! 반가워! 나는 시아야."
+        assert "greeting.wav" not in response["message"]
 
     @pytest.mark.asyncio
     async def test_demo_mode_disabled_in_direction_stage(self, mock_mic, mock_stt, tts_lock):

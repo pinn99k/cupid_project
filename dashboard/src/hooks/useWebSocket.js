@@ -4,8 +4,10 @@ export function useWebSocket(url) {
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const dangerTimerRef = useRef(null);
+  const disconnectedNotifiedRef = useRef(false);
   const [messages, setMessages] = useState([]);
   const [voiceState, setVoiceState] = useState("idle");
+  const [manualRecordingState, setManualRecordingState] = useState("idle");
   const [latestDanger, setLatestDanger] = useState(null);
   const [latestObjects, setLatestObjects] = useState([]);
   const [serverState, setServerState] = useState({});
@@ -18,9 +20,24 @@ export function useWebSocket(url) {
       const ws = new WebSocket(url);
       wsRef.current = ws;
 
-      ws.onopen = () => setConnected(true);
+      ws.onopen = () => {
+        disconnectedNotifiedRef.current = false;
+        setConnected(true);
+      };
       ws.onclose = () => {
         setConnected(false);
+        setManualRecordingState("idle");
+        if (!closedByEffect && !disconnectedNotifiedRef.current) {
+          disconnectedNotifiedRef.current = true;
+          setMessages((prev) => [
+            ...prev.slice(-50),
+            {
+              type: "error",
+              message: "서버 연결이 끊어졌습니다.",
+              timestamp: Date.now(),
+            },
+          ]);
+        }
         if (!closedByEffect) {
           reconnectTimerRef.current = window.setTimeout(connect, 1500);
         }
@@ -37,6 +54,7 @@ export function useWebSocket(url) {
 
         if (type === "init_state" || type === "ack") {
           setServerState((prev) => ({ ...prev, ...data }));
+          if (data.recording_state) setManualRecordingState(data.recording_state);
         }
         if (type === "ack" && ["new_session", "stop_learning"].includes(data.event)) {
           setMessages([]);
@@ -51,6 +69,9 @@ export function useWebSocket(url) {
         if (type === "tts_start") setVoiceState("responding");
         if (type === "tts_done") setVoiceState("listening");
         if (type === "voice_idle") setVoiceState("idle");
+        if (type === "recording_state") {
+          setManualRecordingState(data.state || "idle");
+        }
         if (type === "detections_update" && data.objects) {
           setLatestObjects(data.objects);
         }
@@ -80,9 +101,9 @@ export function useWebSocket(url) {
   const clearMessages = useCallback(() => setMessages([]), []);
 
   return {
-    ws: wsRef.current,
     messages,
     voiceState,
+    manualRecordingState,
     latestDanger,
     latestObjects,
     serverState,

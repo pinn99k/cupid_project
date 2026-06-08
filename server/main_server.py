@@ -10,6 +10,7 @@ import copy
 import time
 import threading
 import asyncio as _asyncio
+from collections import deque
 from dataclasses import dataclass, asdict
 
 import cv2
@@ -59,6 +60,7 @@ def _encode_frame():
 # ---------------------------------------------------------------------------
 _latest_scene = None          # enriched dict
 _latest_scene_ts = 0.0        # 갱신 시각(ms)
+_scene_history = deque(maxlen=5)
 _scene_lock = threading.Lock()
 
 
@@ -68,14 +70,62 @@ def set_scene(enriched: dict):
     with _scene_lock:
         _latest_scene = copy.deepcopy(enriched) if enriched is not None else None
         _latest_scene_ts = time.time() * 1000
+        if _latest_scene is not None:
+            _scene_history.append(copy.deepcopy(_latest_scene))
 
 
 def get_scene() -> tuple[dict | None, float]:
-    """음성 VQA용 — (최신 장면 복사본, 갱신시각ms) 반환. 없으면 (None, 0.0)."""
+    """음성 VQA용 — 최근 5프레임 다수결 장면을 즉시 반환. 없으면 (None, 0.0)."""
     with _scene_lock:
         if _latest_scene is None:
             return None, 0.0
-        return copy.deepcopy(_latest_scene), _latest_scene_ts
+        return _majority_scene_locked(), _latest_scene_ts
+
+
+def _majority_scene_locked() -> dict:
+    """최근 3~5프레임 객체 방향을 다수결로 안정화. _scene_lock 안에서만 호출."""
+    scenes = list(_scene_history)[-5:]
+    if not scenes:
+        return copy.deepcopy(_latest_scene)
+
+    votes: dict[tuple[str, str], dict] = {}
+    latest_keys = set()
+    for idx, scene in enumerate(scenes):
+        seen_in_frame = set()
+        for obj in scene.get("objects", []):
+            if not isinstance(obj, dict):
+                continue
+            label = str(obj.get("label", ""))
+            direction = str(obj.get("direction", ""))
+            if not label or direction not in {"left", "center", "right"}:
+                continue
+            key = (label, direction)
+            if key in seen_in_frame:
+                continue
+            seen_in_frame.add(key)
+            if key not in votes:
+                votes[key] = {"count": 0, "obj": copy.deepcopy(obj)}
+            votes[key]["count"] += 1
+            votes[key]["obj"] = copy.deepcopy(obj)
+            if idx == len(scenes) - 1:
+                latest_keys.add(key)
+
+    stable = [
+        data["obj"]
+        for key, data in votes.items()
+        if data["count"] >= 2 or (len(scenes) < 3 and key in latest_keys)
+    ]
+    if not stable:
+        stable = [
+            copy.deepcopy(obj)
+            for obj in (_latest_scene or {}).get("objects", [])
+            if isinstance(obj, dict)
+        ]
+
+    result = copy.deepcopy(_latest_scene)
+    result["objects"] = stable
+    result["scene_history_frames"] = len(scenes)
+    return result
 
 
 def clear_scene():
@@ -87,6 +137,7 @@ def clear_scene():
             print("[SCENE] 잔류 장면 초기화 (이전 탐지 결과 제거)")
         _latest_scene = None
         _latest_scene_ts = 0.0
+        _scene_history.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +174,10 @@ def get_state() -> dict:
         "learning_active": app_state.learning_active,
         "session_id": app_state.session_id,
         "question_count": app_state.question_count,
+        "recording_state": (
+            getattr(_voice_pipeline, "recording_state", "idle")
+            if _voice_pipeline else "idle"
+        ),
     }
 
 
@@ -208,6 +263,11 @@ async def handle_dashboard_message(msg: dict):
                 "event": "stop_learning",
                 "stage": app_state.current_stage,
             })
+            await broadcast({
+                "type": "recording_state",
+                "state": "idle",
+                "timestamp": int(time.time() * 1000),
+            })
 
         elif event == "start_pipeline":
             # 대시보드 마이크 시작 버튼 → 청취 활성화
@@ -222,6 +282,26 @@ async def handle_dashboard_message(msg: dict):
                 _voice_pipeline.stop_listening()
             print("[SERVER] 파이프라인 청취 일시 중지")
             await broadcast({"type": "ack", "event": "stop_pipeline"})
+
+        elif event == "start_recording":
+            ok = False
+            if _voice_pipeline:
+                ok = await _voice_pipeline.on_manual_start_recording()
+            await broadcast({
+                "type": "ack",
+                "event": "start_recording",
+                "ok": ok,
+            })
+
+        elif event == "stop_recording":
+            ok = False
+            if _voice_pipeline:
+                ok = await _voice_pipeline.on_manual_stop_recording()
+            await broadcast({
+                "type": "ack",
+                "event": "stop_recording",
+                "ok": ok,
+            })
 
         elif event == "new_session":
             reset_session()
@@ -240,6 +320,11 @@ async def handle_dashboard_message(msg: dict):
                 "event": "new_session",
                 "session_id": app_state.session_id,
                 "stage": app_state.current_stage,
+            })
+            await broadcast({
+                "type": "recording_state",
+                "state": "idle",
+                "timestamp": int(time.time() * 1000),
             })
 
         elif event == "clear_tts_cache":

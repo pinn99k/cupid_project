@@ -173,29 +173,25 @@ class WhisperSTTClient:
         try:
             self._ensure_model()
             audio = _wav_to_float32(wav_bytes)
+            # 임계값을 transcribe()에 직접 전달 → faster-whisper가 올바른 AND 로직
+            # (no_speech_prob 높음 그리고 avg_logprob 낮음)으로 내부 필터.
             segments, _info = self._model.transcribe(
                 audio,
                 language=self._language,
                 beam_size=self._beam_size,
                 vad_filter=self._vad_filter,
                 condition_on_previous_text=False,  # 환각 루프 방지
+                no_speech_threshold=self._no_speech_threshold,
+                log_prob_threshold=self._logprob_threshold,
             )
-            kept: list[str] = []
-            for seg in segments:
-                nsp = getattr(seg, "no_speech_prob", None)
-                alp = getattr(seg, "avg_logprob", None)
-                # 무음/저신뢰 세그먼트 폐기(헛텍스트 차단)
-                if nsp is not None and nsp > self._no_speech_threshold:
-                    continue
-                if alp is not None and alp < self._logprob_threshold:
-                    continue
-                kept.append(seg.text)
-            text = " ".join(t.strip() for t in kept).strip()
+            # ⚠️ 추가 OR-필터 제거: 시끄러운 환경에서 실제 발화까지 과도하게 버려
+            #    "인식 결과 없음"이 양산되던 근본 원인. 내부 필터 결과를 그대로 사용.
+            text = " ".join(seg.text.strip() for seg in segments).strip()
             if text:
                 self.last_status = "ok"
                 return text
             self.last_status = "unrecognized"
-            print("[STT] Whisper 인식 결과 없음(무음/환각 필터)")
+            print("[STT] Whisper 인식 결과 없음")
             return None
         except Exception as e:
             print(f"[STT] ⚠ Whisper 오류: {type(e).__name__}: {e}")

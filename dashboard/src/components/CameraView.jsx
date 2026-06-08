@@ -6,14 +6,15 @@ const STAGE_LABELS = {
   3: "REC · 기술 단계 · 감시 중",
 };
 
-// 카메라 박스 비율 — 박스 자체를 영상 비율로 만들어 왜곡·잘림·까만띠 없이 꽉 채운다.
-// 박스 양옆 남는 자리는 페이지 배경(크림색)이 된다.
-// ESP32-CAM/세로(회전 90/270): "3 / 4"   |   웹캠/가로(회전 0/180): "4 / 3"
-const VIDEO_ASPECT = "3 / 4";
+// 카메라 박스 비율 — 박스 자체를 실제 영상 비율로 만들어 왜곡·잘림·까만띠 없이 꽉 채운다.
+// 실제 스트림 해상도를 img onLoad에서 읽어 동적으로 맞춘다(회전 0/90/180/270 무관).
+// 로드 전 기본값은 ESP32-CAM 기본 출력(가로 VGA 640x480 = 4:3).
+const DEFAULT_ASPECT = "4 / 3";
 
 export default function CameraView({ stage, objects = [], danger }) {
   const [retryKey, setRetryKey] = useState(0);
   const [imgError, setImgError] = useState(false);
+  const [aspect, setAspect] = useState(DEFAULT_ASPECT);
   const videoUrl = useMemo(
     () => `http://${window.location.hostname}:8000/video_feed?retry=${retryKey}`,
     [retryKey],
@@ -44,12 +45,22 @@ export default function CameraView({ stage, objects = [], danger }) {
 
   return (
     // 바깥 래퍼: 가용 공간을 차지하고 카메라 박스를 가운데 정렬(좌우는 페이지 배경).
-    <div style={{ flex: 1, minHeight: 0, marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
       {/* 카메라 박스: 영상 비율(세로)로 만들어 왜곡·잘림·까만띠 없이 꽉 채움.
           가용 높이를 채우고 가로는 비율대로 자동. img·bbox·오버레이 모두 이 박스 기준 → 정렬 일치. */}
-      <div style={{ position: "relative", height: "100%", aspectRatio: VIDEO_ASPECT, maxWidth: "100%", background: "#1E1E1E", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ position: "relative", height: "100%", aspectRatio: aspect, maxWidth: "100%", background: "#1E1E1E", borderRadius: 8, overflow: "hidden" }}>
         {!imgError ? (
-          <img src={videoUrl} style={{ display: "block", width: "100%", height: "100%", objectFit: "cover" }} onError={() => setImgError(true)} alt="camera feed" />
+          <img
+            src={videoUrl}
+            style={{ display: "block", width: "100%", height: "100%", objectFit: "contain" }}
+            onLoad={(e) => {
+              const w = e.target.naturalWidth;
+              const h = e.target.naturalHeight;
+              if (w && h) setAspect(`${w} / ${h}`);
+            }}
+            onError={() => setImgError(true)}
+            alt="camera feed"
+          />
         ) : (
           <div style={{ width: "100%", height: "100%", display: "grid", placeItems: "center", color: "rgba(255,255,255,0.55)", fontFamily: "monospace" }}>
             카메라 다시 연결 중...

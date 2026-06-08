@@ -1,6 +1,6 @@
 const STAGE_LABELS = ["수용", "방향", "기술"];
 
-export default function ControlBar({ send, stage, onStageChange }) {
+export default function ControlBar({ send, stage, onStageChange, onExit }) {
   const outlineBtn = {
     border: "1px solid var(--pink-primary)",
     color: "var(--pink-primary)",
@@ -44,7 +44,7 @@ export default function ControlBar({ send, stage, onStageChange }) {
         </span>
         <button
           style={outlineBtn}
-          onClick={() => send({ event: "new_session" })}
+          onClick={onExit}
         >
           새 세션
         </button>
@@ -71,6 +71,7 @@ export default function ControlBar({ send, stage, onStageChange }) {
         {STAGE_LABELS.map((label, i) => {
           const n = i + 1;
           const active = n === stage;
+          const disabled = n === 3; // 기술(위험)단계: 버튼은 유지하되 동작 없음
           return (
             <button
               key={n}
@@ -80,11 +81,12 @@ export default function ControlBar({ send, stage, onStageChange }) {
                 border: "none",
                 borderRadius: 6,
                 padding: "6px 16px",
-                cursor: "pointer",
+                cursor: disabled ? "not-allowed" : "pointer",
                 fontSize: 13,
                 fontWeight: active ? "bold" : "normal",
+                opacity: disabled ? 0.5 : 1,
               }}
-              onClick={() => onStageChange(n)}
+              onClick={() => { if (!disabled) onStageChange(n); }}
             >
               {label}
             </button>

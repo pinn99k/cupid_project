@@ -4,9 +4,16 @@ const STAGES = [
   { num: 3, ko: "기술", en: "SKILL" },
 ];
 
-export default function StageStepper({ stage }) {
+export default function StageStepper({ stage, compact = false }) {
   return (
-    <div style={{ display: "flex", gap: 24, padding: "12px 24px" }}>
+    <div
+      style={{
+        display: "flex",
+        gap: compact ? 10 : 24,
+        padding: compact ? "8px 2px" : "12px 24px",
+        flexWrap: compact ? "wrap" : "nowrap",
+      }}
+    >
       {STAGES.map((s) => {
         const active = s.num === stage;
         return (
@@ -15,22 +22,22 @@ export default function StageStepper({ stage }) {
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 10,
-              paddingBottom: 8,
+              gap: compact ? 6 : 10,
+              paddingBottom: compact ? 4 : 8,
               borderBottom: active ? "3px solid #F4A7A7" : "3px solid transparent",
             }}
           >
             <div
               style={{
-                width: 28,
-                height: 28,
+                width: compact ? 22 : 28,
+                height: compact ? 22 : 28,
                 borderRadius: "50%",
                 background: active ? "#F4A7A7" : "#ddd",
                 color: active ? "#fff" : "#999",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                fontSize: 13,
+                fontSize: compact ? 12 : 13,
                 fontWeight: "bold",
               }}
             >
@@ -38,12 +45,12 @@ export default function StageStepper({ stage }) {
             </div>
             <span
               style={{
-                fontSize: 14,
+                fontSize: compact ? 13 : 14,
                 fontWeight: active ? "bold" : "normal",
                 color: active ? "var(--text-primary)" : "#bbb",
               }}
             >
-              {s.ko} {s.en}
+              {compact ? s.ko : `${s.ko} ${s.en}`}
             </span>
           </div>
         );

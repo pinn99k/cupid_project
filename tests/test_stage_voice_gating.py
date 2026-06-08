@@ -14,12 +14,16 @@ class _FakePipeline:
     def __init__(self):
         self.started = 0
         self.stopped = 0
+        self.stage = None
 
     def start(self):
         self.started += 1
 
     def stop_listening(self):
         self.stopped += 1
+
+    def set_stage(self, stage):
+        self.stage = stage
 
     def reset(self):
         pass
@@ -68,3 +72,10 @@ def test_stage3_if_sent_still_voice_on():
     fake = _with_fake()
     _send({"event": "start_learning", "stage": 3})
     assert fake.started == 1 and fake.stopped == 0
+
+
+def test_stage_forwarded_to_pipeline():
+    # DEMO_MODE 적용 범위 판정을 위해 단계를 파이프라인에 전달
+    fake = _with_fake()
+    _send({"event": "start_learning", "stage": 2})
+    assert fake.stage == 2

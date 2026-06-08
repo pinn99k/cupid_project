@@ -8,7 +8,7 @@ import STTInput from '../components/STTInput.jsx'
 import ControlBar from '../components/ControlBar.jsx'
 import FallbackPanel from '../components/FallbackPanel.jsx'
 
-function DashboardPage({ send, connected, stage, setStage, ws, useWs }) {
+function DashboardPage({ send, connected, stage, setStage, ws, useWs, onExit }) {
   // useWebSocket에서 분류된 정보 추출
   const { messages, voiceState, latestDanger, latestObjects, serverState } = useWs || {
     messages: [],
@@ -30,27 +30,29 @@ function DashboardPage({ send, connected, stage, setStage, ws, useWs }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--cream-bg)' }}>
-      <Header connected={connected} sessionId={sessionId} />
-
-      <StageStepper stage={stage} />
-
-      {/* Main content */}
+      {/* 본문 — 좌: 카메라(최상단까지)+방향(아래) / 우: 헤더·단계·대화.
+          풀폭 Header/StageStepper를 우측으로 옮겨 카메라가 화면 최상단까지 닿게 함. */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* Left panel */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '0 16px 16px 16px' }}>
+        {/* 좌+중: 카메라(최상단부터) + 방향패널(캠 바로 아래) */}
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <CameraView stage={stage} objects={latestObjects} danger={latestDanger} />
-          <DirectionPanel objects={latestObjects} />
+          <div style={{ padding: '12px 16px 16px 16px' }}>
+            <DirectionPanel objects={latestObjects} />
+          </div>
         </div>
 
-        {/* Right panel */}
+        {/* 우: 헤더 + 단계 + 대화 */}
         <div style={{
           width: 380,
+          minWidth: 340,
           borderLeft: '1px solid #eee',
           display: 'flex',
           flexDirection: 'column',
-          padding: '0 16px 16px 16px',
+          padding: '12px 16px 16px 16px',
         }}>
-          <div style={{ flex: 1, background: 'white', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+          <Header connected={connected} sessionId={sessionId} compact />
+          <StageStepper stage={stage} compact />
+          <div style={{ flex: 1, background: 'white', borderRadius: 'var(--radius)', overflow: 'hidden', marginTop: 12 }}>
             <ChatPanel messages={messages} stage={stage} />
           </div>
           <div style={{ marginTop: 12 }}>
@@ -65,7 +67,7 @@ function DashboardPage({ send, connected, stage, setStage, ws, useWs }) {
         </div>
       </div>
 
-      <ControlBar send={send} stage={stage} onStageChange={handleStageChange} />
+      <ControlBar send={send} stage={stage} onStageChange={handleStageChange} onExit={onExit} />
     </div>
   )
 }

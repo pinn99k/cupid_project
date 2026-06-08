@@ -4,7 +4,7 @@ const DIRS = [
   { key: "right", label: "오른쪽", hint: "R" },
 ];
 
-export default function DirectionPanel({ objects = [] }) {
+export default function DirectionPanel({ objects = [], vertical = false }) {
   const grouped = { left: [], center: [], right: [] };
   objects.forEach((obj) => {
     if (grouped[obj.direction]) {
@@ -13,7 +13,14 @@ export default function DirectionPanel({ objects = [] }) {
   });
 
   return (
-    <div style={{ display: "flex", gap: 8 }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: vertical ? "column" : "row",
+        gap: 8,
+        ...(vertical ? { height: "100%" } : {}),
+      }}
+    >
       {DIRS.map((d) => (
         <div
           key={d.key}

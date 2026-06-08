@@ -23,8 +23,22 @@ function App() {
     }
   }, [messages, clearMessages])
 
+  // 시작하기: 깨끗한 재시작(new_session) + stage 1 + 대시보드 진입
+  const handleStart = () => {
+    send({ event: 'new_session' })
+    setStage(1)
+    setPage('dashboard')
+  }
+
+  // 새 세션(대시보드 → StartPage 복귀): 서버 세션 리셋 + 시작화면으로
+  const handleExit = () => {
+    send({ event: 'new_session' })
+    setStage(1)
+    setPage('start')
+  }
+
   if (page === 'start') {
-    return <StartPage connected={connected} onStart={() => setPage('dashboard')} />
+    return <StartPage connected={connected} onStart={handleStart} />
   }
 
   return (
@@ -35,6 +49,7 @@ function App() {
       setStage={setStage}
       ws={ws}
       useWs={useWs}
+      onExit={handleExit}
     />
   )
 }

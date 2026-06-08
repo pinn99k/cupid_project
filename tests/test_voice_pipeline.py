@@ -436,6 +436,29 @@ class TestRunOneTurn:
         assert response["audio_file"] == "greeting.wav"
 
     @pytest.mark.asyncio
+    async def test_demo_mode_disabled_in_direction_stage(self, mock_mic, mock_stt, tts_lock):
+        """방향단계(stage 2)에서는 DEMO_MODE여도 실제 LLM 경로를 사용한다."""
+        mock_stt.transcribe = AsyncMock(return_value="시아야 안녕")
+        mock_am = MagicMock()
+        mock_am.wait_until_idle = AsyncMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        mock_tts_cache = MagicMock()
+        mock_tts_cache.get_or_create = AsyncMock(return_value="/tmp/x.mp3")
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock, audio_manager=mock_am)
+        vp.start()
+        vp.set_stage(2)  # 방향단계 → 데모 비활성
+
+        with patch("server.voice_pipeline.DEMO_MODE", True), \
+             patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch("ai_core.llm_client.call_async", new=AsyncMock(return_value="안녕! 반가워")) as mock_llm, \
+             patch("ai_core.llm_client.SYSTEM_PROMPT", "프롬프트"), \
+             patch("ai_core.tts.get_tts_cache", return_value=mock_tts_cache):
+            await vp._run_one_turn()
+
+        mock_llm.assert_awaited()        # 데모 우회 없이 LLM 호출
+        assert vp.voice_history == []    # 데모 사전음성 기록 없음
+
+    @pytest.mark.asyncio
     async def test_demo_mode_scene_traffic_light_only_once(self, tmp_path, mock_mic, mock_stt, tts_lock):
         """같은 시연 세션에서 신호등은 한 번만 안내하고 이후 all_clear로 넘어간다."""
         voice_dir = tmp_path / "voices"

@@ -43,6 +43,9 @@ from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX, CAM_SOURCE,
                            CAMERA_ROTATION,
                            MIC_DEVICE_INDEX, VAD_SILENCE_THRESHOLD,
                            VAD_SILENCE_DURATION, VAD_MAX_DURATION, STT_LANGUAGE,
+                           STT_ENGINE, WHISPER_MODEL, WHISPER_DEVICE,
+                           WHISPER_COMPUTE_TYPE, WHISPER_BEAM_SIZE, WHISPER_VAD_FILTER,
+                           WHISPER_NO_SPEECH_THRESHOLD, WHISPER_LOGPROB_THRESHOLD,
                            RELEVANCE_MIN_AREA, VAD_LOW_VOLUME_RMS,
                            DETECTION_BROADCAST_INTERVAL, AI_LOOP_SLEEP_SEC,
                            VOICE_OUTPUT_SETTLE_SEC, VOICE_REPROMPT_COOLDOWN_SEC,
@@ -50,7 +53,7 @@ from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX, CAM_SOURCE,
                            ULTRASONIC_TIMEOUT_SEC, ULTRASONIC_STALE_SEC,
                            ULTRASONIC_BUFFER_N, SIA_DEBUG, LATENCY_LOG_DIR)
 from server.mic import MicCapture
-from server.stt import STTClient
+from server.stt import create_stt_client
 from server.voice_pipeline import VoicePipeline
 from utils.latency_logger import log, elapsed, configure as configure_latency, get_logger
 
@@ -514,8 +517,8 @@ async def _run_narration(enriched, tts, audio, stage):
 # ---------------------------------------------------------------------------
 # 프리웜 / 콜드스타트 워밍업 (백그라운드 — 서버 기동을 지연시키지 않음)
 # ---------------------------------------------------------------------------
-async def _warmup(tts):
-    """고정 문구 TTS 프리웜 + LLM 콜드스타트 더미 호출.
+async def _warmup(tts, stt=None):
+    """고정 문구 TTS 프리웜 + LLM 콜드스타트 더미 호출 + STT(Whisper) 모델 로드.
 
     - 백그라운드 task로 실행 → 서버 기동(루프 시작)을 막지 않음.
     - 전부 best-effort: 실패해도 서버 동작에 지장 없게 예외를 삼킨다.
@@ -533,6 +536,14 @@ async def _warmup(tts):
     except Exception as e:
         print(f"[PREWARM] LLM 워밍업 오류(무시): {e}")
 
+    # STT(Whisper) 모델 로드 워밍업 — 첫 발화 콜드스타트 방지.
+    warm = getattr(stt, "warmup", None)
+    if warm:
+        try:
+            await asyncio.to_thread(warm)
+        except Exception as e:
+            print(f"[PREWARM] STT 워밍업 오류(무시): {e}")
+
 
 # ---------------------------------------------------------------------------
 # 서버 생명주기
@@ -547,10 +558,22 @@ async def startup():
     llm_init()
     tts = get_tts_cache()
     tts.start_session(f"session_{int(time.time())}")
+    # STT 클라이언트(google | whisper) — 워밍업 대상이라 먼저 생성.
+    stt = create_stt_client(
+        engine=STT_ENGINE,
+        language=STT_LANGUAGE,
+        model_size=WHISPER_MODEL,
+        device=WHISPER_DEVICE,
+        compute_type=WHISPER_COMPUTE_TYPE,
+        beam_size=WHISPER_BEAM_SIZE,
+        vad_filter=WHISPER_VAD_FILTER,
+        no_speech_threshold=WHISPER_NO_SPEECH_THRESHOLD,
+        logprob_threshold=WHISPER_LOGPROB_THRESHOLD,
+    )
     # 프리웜/워밍업 — start_session 직후 백그라운드로 (기동 지연 방지).
     # SIA_PREWARM=off 면 스킵.
     if _prewarm_enabled():
-        _warmup_task = asyncio.create_task(_warmup(tts))
+        _warmup_task = asyncio.create_task(_warmup(tts, stt))
         _warmup_task.add_done_callback(_task_done_callback)
     else:
         print("[PREWARM] SIA_PREWARM=off → 프리웜/워밍업 스킵")
@@ -571,7 +594,6 @@ async def startup():
         # TTS/narration 재생 중 골전도 이어폰 echo → silence_reset 방지
         audio_playing_check=get_audio_manager().is_playing,
     )
-    stt = STTClient(language=STT_LANGUAGE)
     voice_pipeline = VoicePipeline(
         mic=mic,
         stt=stt,

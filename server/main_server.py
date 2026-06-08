@@ -189,6 +189,7 @@ async def handle_dashboard_message(msg: dict):
             #  수용(1)도 시아와 대화하며 친해지는 단계라 음성 ON(일반 대화만, scene 없음).
             #  방향(2)+ 는 scene 기반 VQA까지. (이전엔 stage1=음성 OFF였으나 대화 가능하게 변경)
             if _voice_pipeline:
+                _voice_pipeline.set_stage(stage)  # DEMO_MODE는 수용(1)만 적용
                 _voice_pipeline.start()
             await broadcast({
                 "type": "ack",

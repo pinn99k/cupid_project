@@ -88,6 +88,9 @@ class VoicePipeline:
         self._response_cache_max = 10
         # 청취 활성화 플래그 — 서버 시작 시 OFF, 대시보드 시작 버튼으로 ON
         self._active = False
+        # 현재 학습 단계 — main_server가 start_learning 시 갱신.
+        # DEMO_MODE는 수용(1)에서만 적용, 방향(2)+는 실제 LLM/VQA 사용.
+        self._current_stage = 1
 
     async def run(self):
         """메인 턴 루프. 한 번에 한 턴만 실행."""
@@ -210,15 +213,18 @@ class VoicePipeline:
             "timestamp": int(time.time() * 1000),
         })
 
+        # DEMO_MODE는 수용단계(stage 1)에서만 적용. 방향(2)+는 실제 LLM/VQA.
+        _demo_active = DEMO_MODE and self._current_stage < 2
+
         # 파이프라인 상태 플래그 — 응답 직전 한눈에 진단
         _am_playing = bool(self._audio_manager and self._audio_manager.is_playing())
         print(
-            f"[PIPELINE_STATE] flags: demo={DEMO_MODE}"
+            f"[PIPELINE_STATE] flags: demo={DEMO_MODE} demo_active={_demo_active}(stage={self._current_stage})"
             f" listening={self._active} speaking(tts_lock)={self._tts_lock.locked()}"
             f" audio_playing={_am_playing}"
         )
 
-        if DEMO_MODE:
+        if _demo_active:
             await self._run_demo_response(text, _speech_end)
             return
 
@@ -585,6 +591,13 @@ class VoicePipeline:
 
         history_text = "\n".join(history_lines)
         return f"{base_prompt}\n\n[이전 대화]\n{history_text}"
+
+    def set_stage(self, stage: int):
+        """현재 학습 단계 갱신 — DEMO_MODE 적용 범위(수용단계만) 판정에 사용."""
+        try:
+            self._current_stage = int(stage)
+        except (TypeError, ValueError):
+            self._current_stage = 1
 
     def start(self):
         """청취 활성화 — 대시보드 시작 버튼 클릭 시 호출."""

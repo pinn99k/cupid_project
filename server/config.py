@@ -152,6 +152,19 @@ VAD_AMBIENT_FACTOR: float = float(os.getenv("VAD_AMBIENT_FACTOR", "2.0"))
 
 # STT 설정
 STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "ko-KR")
+# STT 엔진: "google"(무료·네트워크) | "whisper"(로컬 faster-whisper·오프라인).
+# whisper 선택 시 미설치/로드 실패면 자동으로 google 폴백(데모 안전).
+STT_ENGINE: str = os.getenv("STT_ENGINE", "whisper").lower()
+# 로컬 Whisper(faster-whisper) 설정
+WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "small")          # tiny/base/small/medium/large-v3
+WHISPER_DEVICE: str = os.getenv("WHISPER_DEVICE", "auto")          # auto/cpu/cuda
+WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")  # int8/int8_float16/float16/float32
+WHISPER_BEAM_SIZE: int = int(os.getenv("WHISPER_BEAM_SIZE", "5"))
+# faster-whisper 내장 Silero VAD(비음성 억제). onnxruntime 필요할 수 있어 기본 off.
+WHISPER_VAD_FILTER: bool = os.getenv("WHISPER_VAD_FILTER", "").lower() in ("1", "true", "yes", "on")
+# 환각 필터: 무음/잡음에 헛텍스트 생성 방지
+WHISPER_NO_SPEECH_THRESHOLD: float = float(os.getenv("WHISPER_NO_SPEECH_THRESHOLD", "0.6"))
+WHISPER_LOGPROB_THRESHOLD: float = float(os.getenv("WHISPER_LOGPROB_THRESHOLD", "-1.0"))
 
 # 출력 음성이 마이크에 되먹임되지 않도록 재생 완료 후 잠깐 더 듣기를 멈춘다.
 VOICE_OUTPUT_SETTLE_SEC: float = float(os.getenv("VOICE_OUTPUT_SETTLE_SEC", "0.4"))

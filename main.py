@@ -48,6 +48,7 @@ from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX, CAM_SOURCE,
                            WHISPER_NO_SPEECH_THRESHOLD, WHISPER_LOGPROB_THRESHOLD,
                            RELEVANCE_MIN_AREA, VAD_LOW_VOLUME_RMS,
                            DETECTION_BROADCAST_INTERVAL, AI_LOOP_SLEEP_SEC,
+                           DETECT_INTERVAL_SEC,
                            VOICE_OUTPUT_SETTLE_SEC, VOICE_REPROMPT_COOLDOWN_SEC,
                            ULTRASONIC_URL, ULTRASONIC_POLL_SEC, ULTRASONIC_OFFSET_CM,
                            ULTRASONIC_TIMEOUT_SEC, ULTRASONIC_STALE_SEC,
@@ -70,7 +71,6 @@ def _prewarm_enabled() -> bool:
 
 MAX_WEBCAM_RETRIES = 5
 WEBCAM_RETRY_DELAY = 3.0        # seconds
-MAX_FRAME_FAILS = 30             # 연속 프레임 실패 허용 횟수
 DANGER_COOLDOWN = 20.0           # 같은 객체 위험 재경고 간격 (초)
 NARRATION_INTERVAL = 20.0         # LLM 공간 묘사 간격 (초)
 
@@ -348,6 +348,8 @@ async def _ai_loop():
     last_danger_time = 0.0
     last_danger_obj = None
     last_detection_broadcast_time = 0.0
+    last_detect_time = 0.0          # P1: 마지막 YOLO 추론 시각
+    enriched = None                 # P1: 검출 결과 캐시(주기 사이 재사용)
 
     while True:
         # Stage 1은 대화 전용 — AI 분석 불필요
@@ -358,28 +360,38 @@ async def _ai_loop():
             await asyncio.sleep(0.5)
             continue
 
-        # 최신 프레임 가져오기 (프레임 루프가 공급)
-        frame = get_frame()
-        if frame is None:
-            await asyncio.sleep(0.1)
-            continue
-
-        h, w = frame.shape[:2]
-        log("detect_start")
-        dets = await asyncio.to_thread(detect, frame)
-        # 초음파 거리 주입 (폴링 루프가 채움; 미연결/끊김이면 None → 기존 동작과 동일)
-        enriched = enrich(dets, w, h, ultrasonic_cm=_get_distance(),
-                          min_relevant_area=RELEVANCE_MIN_AREA)
-        log("detect_end")
-        elapsed("detect_start", "detect_end")  # YOLO 추론시간 집계(P1 측정)
-
-        # 최신 장면을 공유 슬롯에 저장 — "시아야 질문" 시 VQA가 읽음 (Unit 3)
-        # YOLO를 음성 경로에서 또 돌리지 않기 위함 (shared_resources.md §6)
-        set_scene(enriched)
-
         now = time.time()
 
-        # 음성 안내와 별도로 대시보드 탐지 상태는 실시간 갱신
+        # P1 디커플링: DETECT_INTERVAL_SEC>0이면 그 간격으로만 YOLO 추론하고
+        # 사이엔 직전 결과(enriched)를 재사용 → CPU 절약. 0이면 매 루프 검출(변경 전과 동일).
+        # 최초(enriched None)엔 무조건 검출.
+        need_detect = (
+            DETECT_INTERVAL_SEC <= 0
+            or enriched is None
+            or (now - last_detect_time) >= DETECT_INTERVAL_SEC
+        )
+        if need_detect:
+            # 최신 프레임 가져오기 (프레임 루프가 공급)
+            frame = get_frame()
+            if frame is None:
+                await asyncio.sleep(0.1)
+                continue
+
+            h, w = frame.shape[:2]
+            log("detect_start")
+            dets = await asyncio.to_thread(detect, frame)
+            # 초음파 거리 주입 (폴링 루프가 채움; 미연결/끊김이면 None → 기존 동작과 동일)
+            enriched = enrich(dets, w, h, ultrasonic_cm=_get_distance(),
+                              min_relevant_area=RELEVANCE_MIN_AREA)
+            log("detect_end")
+            elapsed("detect_start", "detect_end")  # YOLO 추론시간 집계(P1 측정)
+            last_detect_time = now
+
+            # 최신 장면을 공유 슬롯에 저장 — "시아야 질문" 시 VQA가 읽음 (Unit 3)
+            # YOLO를 음성 경로에서 또 돌리지 않기 위함 (shared_resources.md §6)
+            set_scene(enriched)
+
+        # 음성 안내와 별도로 대시보드 탐지 상태는 실시간 갱신(검출 재사용 시에도 최신 enriched 송신)
         if (now - last_detection_broadcast_time) >= DETECTION_BROADCAST_INTERVAL:
             last_detection_broadcast_time = now
             await broadcast({

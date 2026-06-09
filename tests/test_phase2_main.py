@@ -169,8 +169,7 @@ def test_frame_loop_frame_fail_recovery():
 
     with patch("main._open_camera_sync", mock_open):
         with patch("main.broadcast", new_callable=AsyncMock):
-            with patch("main.MAX_FRAME_FAILS", 3):  # 3회 실패로 줄임
-                asyncio.run(_frame_loop())
+            asyncio.run(_frame_loop())
 
     assert call_count == 2, f"_open_camera 2회 호출 (초기 + 재연결): {call_count}"
     assert mock_cap.release.called, "실패한 캡처 release 호출"

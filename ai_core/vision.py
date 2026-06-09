@@ -6,7 +6,7 @@ YOLO 객체 인식 + bbox 후처리
 """
 
 from ultralytics import YOLO
-from server.config import YOLO_MODEL, YOLO_CONF_THRESHOLD
+from server.config import YOLO_MODEL, YOLO_CONF_THRESHOLD, YOLO_IMGSZ
 from utils.latency_logger import log
 
 
@@ -30,10 +30,17 @@ def load_model():
     log("yolo_load_end")
 
 
-def detect(frame):
-    """프레임에서 물체 감지 → [{label, x, y, w, h, conf}, ...]"""
+def detect(frame, imgsz=YOLO_IMGSZ):
+    """프레임에서 물체 감지 → [{label, x, y, w, h, conf}, ...]
+
+    imgsz>0이면 추론 입력 해상도를 그 값으로 다운스케일(빠름, 품질 약간↓).
+    0이면 모델 기본값. 출력 bbox는 항상 원본 프레임 좌표라 enrich()는 그대로 동작.
+    """
     log("yolo_detect_start")
-    results = model.predict(source=frame, conf=YOLO_CONF_THRESHOLD, verbose=False)[0]
+    predict_kwargs = {"source": frame, "conf": YOLO_CONF_THRESHOLD, "verbose": False}
+    if imgsz and imgsz > 0:
+        predict_kwargs["imgsz"] = imgsz
+    results = model.predict(**predict_kwargs)[0]
 
     detections = []
     for box in results.boxes:

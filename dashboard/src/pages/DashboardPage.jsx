@@ -40,11 +40,6 @@ function DashboardPage({ send, connected, stage, setStage, useWs, onExit }) {
           <CameraView stage={stage} objects={latestObjects} danger={latestDanger} />
           <div style={{ padding: '12px 16px 16px 16px' }}>
             <DirectionPanel objects={latestObjects} />
-            <MicToggleButton
-              state={manualRecordingState}
-              connected={connected}
-              send={send}
-            />
           </div>
         </div>
 
@@ -62,8 +57,16 @@ function DashboardPage({ send, connected, stage, setStage, useWs, onExit }) {
           <div style={{ flex: 1, background: 'white', borderRadius: 'var(--radius)', overflow: 'hidden', marginTop: 12 }}>
             <ChatPanel messages={messages} stage={stage} />
           </div>
-          <div style={{ marginTop: 12 }}>
-            <STTInput voiceState={voiceState} />
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <STTInput voiceState={voiceState} />
+            </div>
+            <MicToggleButton
+              state={manualRecordingState}
+              connected={connected}
+              send={send}
+              compact
+            />
           </div>
           <details style={{ marginTop: 10, background: '#fff', border: '1px solid #eee', borderRadius: 8, padding: 10 }}>
             <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-secondary)' }}>운영자 Fallback</summary>

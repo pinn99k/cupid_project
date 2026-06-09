@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 
 const MAX_SECONDS = 15;
 
-function MicIcon({ kind = "mic" }) {
+function MicIcon({ kind = "mic", size = 38 }) {
   if (kind === "speaker") {
     return (
-      <svg width="38" height="38" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <path d="M4 9v6h4l5 4V5L8 9H4Z" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
         <path d="M16.5 8.5a5 5 0 0 1 0 7" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
         <path d="M19 6a8 8 0 0 1 0 12" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
@@ -15,14 +15,14 @@ function MicIcon({ kind = "mic" }) {
 
   if (kind === "spinner") {
     return (
-      <svg className="mic-toggle-spin" width="38" height="38" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <svg className="mic-toggle-spin" width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <path d="M12 3a9 9 0 1 0 9 9" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" />
       </svg>
     );
   }
 
   return (
-    <svg width="38" height="38" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" strokeWidth="1.9" />
       <path d="M5.5 11a6.5 6.5 0 0 0 13 0" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
       <path d="M12 17.5V21" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
@@ -31,7 +31,7 @@ function MicIcon({ kind = "mic" }) {
   );
 }
 
-export default function MicToggleButton({ state = "idle", connected = true, send }) {
+export default function MicToggleButton({ state = "idle", connected = true, send, compact = false }) {
   const [optimisticState, setOptimisticState] = useState(state);
   const [remaining, setRemaining] = useState(MAX_SECONDS);
 
@@ -146,8 +146,10 @@ export default function MicToggleButton({ state = "idle", connected = true, send
 
   const isRecording = optimisticState === "recording";
 
+  const buttonSize = compact ? 52 : 96;
+
   return (
-    <div className="mic-toggle-wrap">
+    <div className={`mic-toggle-wrap${compact ? " compact" : ""}`}>
       <style>{`
         .mic-toggle-wrap {
           display: flex;
@@ -156,6 +158,11 @@ export default function MicToggleButton({ state = "idle", connected = true, send
           justify-content: center;
           gap: 9px;
           margin: 8px 0 4px;
+        }
+        .mic-toggle-wrap.compact {
+          margin: 0;
+          gap: 0;
+          flex-shrink: 0;
         }
         .mic-toggle-button {
           position: relative;
@@ -218,21 +225,26 @@ export default function MicToggleButton({ state = "idle", connected = true, send
         onClick={toggle}
         disabled={view.disabled}
         aria-label={view.label}
+        title={view.label}
         style={{
           background: view.bg,
           border: `2px solid ${view.border}`,
           color: view.color,
           cursor: view.disabled ? "not-allowed" : "pointer",
+          width: buttonSize,
+          height: buttonSize,
         }}
       >
         {isRecording && <span className="mic-toggle-ping" />}
         <span style={{ position: "relative", zIndex: 1, display: "inline-flex" }}>
-          <MicIcon kind={view.icon} />
+          <MicIcon kind={view.icon} size={compact ? 26 : 38} />
         </span>
       </button>
-      <div className="mic-toggle-label" style={{ color: view.labelColor }}>
-        {view.label}
-      </div>
+      {!compact && (
+        <div className="mic-toggle-label" style={{ color: view.labelColor }}>
+          {view.label}
+        </div>
+      )}
     </div>
   );
 }

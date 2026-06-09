@@ -54,6 +54,12 @@ OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 # YOLO / 서버 설정
 YOLO_MODEL: str = os.getenv("YOLO_MODEL", "yolov8n.pt")
 YOLO_CONF_THRESHOLD: float = float(os.getenv("YOLO_CONF_THRESHOLD", "0.35"))
+# YOLO 추론 입력 해상도(P1 노브). 0이면 모델 기본값(640) 사용 — 끄면 변경 전과 100% 동일.
+# 낮추면(예: 416) 추론이 빨라짐(품질 약간↓). 32의 배수 권장.
+YOLO_IMGSZ: int = int(os.getenv("YOLO_IMGSZ", "0"))
+# YOLO 검출 주기(초, P1 노브). 0이면 매 루프 검출 — 끄면 변경 전과 100% 동일.
+# >0이면 그 간격으로만 추론하고 사이엔 직전 결과를 재사용 → CPU 절약(표시·판단은 10Hz면 충분).
+DETECT_INTERVAL_SEC: float = float(os.getenv("DETECT_INTERVAL_SEC", "0"))
 # 관련성 게이트(Unit 6): 화면 대비 면적이 이 값 미만인 객체는 무시.
 # 배경 스크린(동물의숲 등)의 작고 먼 오탐 차단. 0이면 비활성.
 RELEVANCE_MIN_AREA: float = float(os.getenv("RELEVANCE_MIN_AREA", "0.01"))

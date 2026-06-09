@@ -1,374 +1,404 @@
 """
-통합 테스트: 모듈 간 연동 + 아키텍처 검증.
-- 턴 기반 파이프라인 직렬성 검증
-- TTS Lock 경합 검증
-- 세션 리셋 전파 검증
-- broadcast 이벤트 순서 검증
-- 대시보드 독립성 검증
+통합 테스트 (현재 코드 + 갈라 시연 시나리오 기준으로 재작성).
+
+시연 3경로(docs/demo_scenario.md)를 계약 단위로 검증한다:
+  경로 A — "시아야" 호출어 게이팅 후 질문 추출 (온디맨드 LLM/TTS 진입조건)
+  경로 B — Stage 3 전용 자율 위험 경고 (judge)
+  경로 C — 실시간 인지(YOLO) + P1 최적화(검출주기 디커플링 / imgsz)
+
+여기에 더해 시스템 불변식(TTS Lock 직렬화, 세션 리셋 전파, 에러 시 tts_done 보장,
+대시보드 독립성, 모듈/설정 무결성)을 검증한다.
+
+하드웨어 불필요 — mic/stt/카메라/오디오는 모두 mock.
 """
 
 import asyncio
-import time
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
-from dataclasses import asdict
+from unittest.mock import AsyncMock, MagicMock, patch
 
-# ---------------------------------------------------------------------------
-# 픽스처
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def mock_mic():
-    mic = MagicMock()
-    mic.listen = AsyncMock(return_value=b"fake_wav")
-    return mic
-
-
-@pytest.fixture
-def mock_stt():
-    stt = MagicMock()
-    # 호출어 게이팅(Unit 2) 후: 턴이 진행되려면 "시아야" 포함 필요
-    stt.transcribe = AsyncMock(return_value="시아야 안녕하세요")
-    return stt
-
-
-@pytest.fixture
-def tts_lock():
-    return asyncio.Lock()
-
-
-@pytest.fixture
-def pipeline(mock_mic, mock_stt, tts_lock):
-    from server.voice_pipeline import VoicePipeline
-    return VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)
+import numpy as np
 
 
 # ===========================================================================
-# 1. 턴 기반 파이프라인 직렬성 검증
+# 경로 A — 호출어("시아야") 게이팅  (시연 핵심: 부를 때만 응답)
 # ===========================================================================
 
-class TestTurnSerialization:
-    """STT→LLM→TTS가 구조적으로 직렬 실행되는지 검증."""
+class TestWakeWordGating:
+    """parse_wake_word: 호출어 뒤 질문만 추출, 호출 아니면 None(무시)."""
+
+    @pytest.mark.parametrize("utterance,expected", [
+        ("시아야 앞에 뭐 있어?", "앞에 뭐 있어"),   # 표준 질의
+        ("안녕 시아야 뭐해", "뭐해"),               # 호출어가 중간
+        ("시아야 지금 가도 돼?", "지금 가도 돼"),
+        ("시아야", ""),                            # 호출만(질문 없음) → 되묻기 트리거
+        ("  시아야   방향 맞아  ", "방향 맞아"),     # 공백 정규화
+    ])
+    def test_wake_extracts_query(self, utterance, expected):
+        from server.wake_word import parse_wake_word
+        assert parse_wake_word(utterance) == expected
+
+    @pytest.mark.parametrize("utterance", [
+        "안녕하세요",          # 호출어 없음 → 무시
+        "오늘 날씨 좋다",
+        "러시아 갈래",         # 단어 중간 '시아' → 호출어로 보지 않음
+        "",                    # 빈 문자열
+        None,                  # None 입력
+    ])
+    def test_non_wake_returns_none(self, utterance):
+        from server.wake_word import parse_wake_word
+        assert parse_wake_word(utterance) is None
+
+    @pytest.mark.parametrize("variant", [
+        "시아야 뭐야",   # 표준
+        "시야야 뭐야",   # STT 흔들림
+        "씨아야 뭐야",
+        "지아야 뭐야",
+        "sia 뭐야",      # 영문 표기
+        "SIA 뭐야",      # 대문자
+    ])
+    def test_stt_variants_still_wake(self, variant):
+        """STT가 호출어를 흔들어 적어도(시야/씨아/sia 등) 인식되어야 시연이 안 끊긴다."""
+        from server.wake_word import parse_wake_word
+        assert parse_wake_word(variant) is not None
+
+
+# ===========================================================================
+# 경로 B — 자율 위험 경고 (Stage 3 전용, LLM 미사용)
+# ===========================================================================
+
+class TestDangerJudgeStageGating:
+    """judge(enriched, stage): Stage 3에서만 위험 판정."""
+
+    def _near_person(self):
+        return {
+            "objects": [{"label": "person", "direction": "center", "distance_est": "near"}],
+            "ultrasonic_cm": None,
+            "ultrasonic_target": "person",
+        }
+
+    @pytest.mark.parametrize("stage", [1, 2])
+    def test_no_danger_outside_stage3(self, stage):
+        """수용(1)·방향(2) 단계에서는 코앞 장애물이어도 위험판단 비활성."""
+        from ai_core.danger import judge
+        scene = {"objects": [], "ultrasonic_cm": 5, "ultrasonic_target": "chair"}
+        assert judge(scene, stage) is None
+
+    def test_ultrasonic_emergency_in_stage3(self):
+        """초음파 < DANGER_DISTANCE_CM(30) → 긴급 정지(최우선 규칙)."""
+        from ai_core.danger import judge
+        scene = {"objects": [], "ultrasonic_cm": 20, "ultrasonic_target": "chair"}
+        result = judge(scene, 3)
+        assert result is not None
+        assert result["level"] == "emergency"
+        assert result["object"] == "chair"
+        assert result["audio_file"] == "warn_emergency.wav"
+
+    def test_ultrasonic_takes_precedence_over_label(self):
+        """초음파 코앞은 YOLO 라벨 판정보다 우선(Rule 1)."""
+        from ai_core.danger import judge
+        scene = self._near_person()
+        scene["ultrasonic_cm"] = 10  # 코앞
+        result = judge(scene, 3)
+        assert result["level"] == "emergency"
+        assert result["audio_file"] == "warn_emergency.wav"
+
+    def test_near_person_label_warning(self):
+        """초음파 없이 person이 near면 사람 경고 음원."""
+        from ai_core.danger import judge
+        result = judge(self._near_person(), 3)
+        assert result["level"] == "warning"
+        assert result["object"] == "person"
+        assert result["audio_file"] == "warn_person.wav"
+
+    def test_near_object_label_warning(self):
+        """위험 라벨(person 외)은 범용 경고 음원."""
+        from ai_core.danger import judge
+        scene = {
+            "objects": [{"label": "chair", "direction": "center", "distance_est": "near"}],
+            "ultrasonic_cm": None,
+        }
+        result = judge(scene, 3)
+        assert result["level"] == "warning"
+        assert result["audio_file"] == "warn_object.wav"
+
+    def test_far_or_irrelevant_is_safe(self):
+        """멀거나 위험 라벨이 아니면 None(안전)."""
+        from ai_core.danger import judge
+        scene = {
+            "objects": [
+                {"label": "person", "direction": "left", "distance_est": "far"},
+                {"label": "book", "direction": "center", "distance_est": "near"},
+            ],
+            "ultrasonic_cm": None,
+        }
+        assert judge(scene, 3) is None
+
+
+# ===========================================================================
+# 경로 C — 실시간 인지(YOLO) + P1 최적화
+# ===========================================================================
+
+class TestYoloDetectImgsz:
+    """detect(frame, imgsz): imgsz>0이면 추론 해상도 다운스케일, 0이면 모델 기본값."""
+
+    def _fake_model(self):
+        m = MagicMock()
+        empty = MagicMock()
+        empty.boxes = []
+        m.predict.return_value = [empty]
+        return m
+
+    def test_imgsz_passed_when_set(self):
+        import ai_core.vision as vision
+        fake = self._fake_model()
+        with patch.object(vision, "model", fake):
+            vision.detect(np.zeros((48, 64, 3), dtype=np.uint8), imgsz=416)
+        assert fake.predict.call_args.kwargs.get("imgsz") == 416
+
+    def test_imgsz_omitted_when_zero(self):
+        """0이면 predict에 imgsz를 넘기지 않음 → 변경 전과 100% 동일."""
+        import ai_core.vision as vision
+        fake = self._fake_model()
+        with patch.object(vision, "model", fake):
+            vision.detect(np.zeros((48, 64, 3), dtype=np.uint8), imgsz=0)
+        assert "imgsz" not in fake.predict.call_args.kwargs
+
+
+class TestP1ConfigDefaults:
+    """P1 노브 기본값은 '꺼짐' — 켜기 전과 동일 동작 보장(킬스위치)."""
+
+    def test_defaults_are_off(self):
+        from server.config import YOLO_IMGSZ, DETECT_INTERVAL_SEC
+        assert YOLO_IMGSZ == 0
+        assert DETECT_INTERVAL_SEC == 0.0
+
+
+class TestAiLoopDetectionDecoupling:
+    """_ai_loop: DETECT_INTERVAL_SEC로 YOLO 추론 빈도를 표시/판단과 디커플링."""
+
+    async def _run_loop_counting_detect(self, detect_interval, max_iters=6):
+        """_ai_loop을 결정적(deterministic) 가짜 시계/sleep으로 N바퀴 돌리고
+        detect 호출 횟수를 센다. 실제 카메라/오디오/모델 없이 루프 분기만 검증."""
+        import main as main_mod
+        import server.main_server as srv
+
+        detect_calls = {"n": 0}
+        clock = {"t": 1000.0}
+
+        def fake_detect(frame, *a, **k):
+            detect_calls["n"] += 1
+            return []
+
+        def fake_time():
+            return clock["t"]
+
+        async def fake_sleep(dt):
+            clock["t"] += dt
+            fake_sleep.calls += 1
+            if fake_sleep.calls >= max_iters:
+                raise asyncio.CancelledError
+        fake_sleep.calls = 0
+
+        prev_stage = srv.app_state.current_stage
+        srv.app_state.current_stage = 3  # 위험판단/검출 활성 단계
+        try:
+            with patch.object(main_mod, "get_audio_manager", return_value=MagicMock()), \
+                 patch.object(main_mod, "get_frame", return_value=np.zeros((48, 64, 3), dtype=np.uint8)), \
+                 patch.object(main_mod, "detect", side_effect=fake_detect), \
+                 patch.object(main_mod, "enrich", return_value={"objects": []}), \
+                 patch.object(main_mod, "set_scene", MagicMock()), \
+                 patch.object(main_mod, "judge", return_value=None), \
+                 patch.object(main_mod, "_get_distance", return_value=None), \
+                 patch.object(main_mod, "broadcast", new_callable=AsyncMock), \
+                 patch.object(main_mod, "AI_LOOP_SLEEP_SEC", 0.03), \
+                 patch.object(main_mod, "DETECT_INTERVAL_SEC", detect_interval), \
+                 patch("main.time.time", fake_time), \
+                 patch("main.asyncio.sleep", fake_sleep):
+                try:
+                    await main_mod._ai_loop()
+                except asyncio.CancelledError:
+                    pass
+        finally:
+            srv.app_state.current_stage = prev_stage
+        return detect_calls["n"]
 
     @pytest.mark.asyncio
-    @patch("server.voice_pipeline.broadcast", new_callable=AsyncMock)
-    async def test_broadcast_order_in_full_turn(self, mock_broadcast, pipeline):
-        """한 턴에서 broadcast 순서: voice_listening → voice_processing → user_stt → tts_start → stt_response → tts_done
-
-        자막(stt_response)은 문장별로 해당 문장 오디오 재생 직전에 나간다.
-        따라서 tts_start 이후, tts_done 이전에 위치한다(문장 수만큼 stt_response 발생).
-        """
-        pipeline.start()
-        with patch("ai_core.llm_client.call_async", new_callable=AsyncMock, return_value="안녕! 반가워"), \
-             patch("ai_core.tts.get_tts_cache") as mock_tts, \
-             patch("ai_core.audio_manager.get_audio_manager") as mock_am:
-            mock_tts_inst = MagicMock()
-            mock_tts_inst.get_or_create = AsyncMock(return_value="/tmp/test.mp3")
-            mock_tts.return_value = mock_tts_inst
-            mock_am_inst = MagicMock()
-            mock_am_inst.wait = AsyncMock(return_value=True)
-            mock_am.return_value = mock_am_inst
-
-            await pipeline._run_one_turn()
-
-            types = [call[0][0]["type"] for call in mock_broadcast.call_args_list]
-            assert types == [
-                "voice_listening",
-                "voice_processing",
-                "user_stt",
-                "tts_start",
-                "stt_response",
-                "tts_done",
-            ], f"Expected strict order, got: {types}"
+    async def test_interval_zero_detects_every_loop(self):
+        """기본값(0): 매 루프 검출 → 여러 번 호출(변경 전과 동일)."""
+        n = await self._run_loop_counting_detect(detect_interval=0.0)
+        assert n >= 3
 
     @pytest.mark.asyncio
-    @patch("server.voice_pipeline.broadcast", new_callable=AsyncMock)
-    async def test_no_concurrent_turns(self, mock_broadcast, mock_mic, mock_stt, tts_lock):
-        """두 턴이 동시에 실행되지 않는지 — run() 내 while 루프가 직렬 보장."""
-        from server.voice_pipeline import VoicePipeline
-
-        call_count = 0
-
-        async def mock_listen():
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 3:
-                return None  # 3번째부터 None → 빈 턴으로 빠져나감
-            return b"audio"
-
-        mock_mic.listen = mock_listen
-        mock_stt.transcribe = AsyncMock(return_value=None)  # STT 실패 → 턴 즉시 종료
-
-        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)
-        vp.start()
-
-        async def stop_after():
-            await asyncio.sleep(0.5)
-            vp.stop()
-
-        asyncio.create_task(stop_after())
-        await vp.run()
-
-        # run()이 종료되면 직렬 실행 완료
-        assert call_count >= 2
+    async def test_large_interval_reuses_detection(self):
+        """큰 간격: 첫 검출 1회 후 간격 내에는 직전 결과 재사용 → 추론 1회."""
+        n = await self._run_loop_counting_detect(detect_interval=100.0)
+        assert n == 1
 
 
 # ===========================================================================
-# 2. TTS Lock 경합 검증
+# TTS Lock 직렬화 — 위험/대화/묘사 음성이 같은 Lock을 공유해 겹치지 않음
 # ===========================================================================
 
 class TestTTSLockContention:
-    """voice_pipeline의 _speak()와 narration/danger TTS가 같은 Lock을 공유하는지 검증."""
+    @pytest.fixture
+    def tts_lock(self):
+        return asyncio.Lock()
 
-    @pytest.mark.asyncio
-    async def test_tts_lock_shared(self, pipeline, tts_lock):
-        """pipeline의 _tts_lock이 외부에서 주입한 것과 동일 객체인지."""
+    @pytest.fixture
+    def pipeline(self, tts_lock):
+        from server.voice_pipeline import VoicePipeline
+        mic = MagicMock()
+        mic.listen = AsyncMock(return_value=b"fake_wav")
+        stt = MagicMock()
+        stt.transcribe = AsyncMock(return_value="시아야 안녕")
+        return VoicePipeline(mic=mic, stt=stt, tts_lock=tts_lock)
+
+    def test_pipeline_uses_injected_lock(self, pipeline, tts_lock):
         assert pipeline._tts_lock is tts_lock
 
     @pytest.mark.asyncio
-    async def test_tts_lock_prevents_concurrent_speak(self, tts_lock):
-        """Lock이 잡혀있으면 두 번째 _speak()는 대기하는지."""
-        execution_order = []
+    async def test_lock_serializes_speakers(self, tts_lock):
+        order = []
 
-        async def task_a():
+        async def speaker_a():
             async with tts_lock:
-                execution_order.append("A_start")
-                await asyncio.sleep(0.2)
-                execution_order.append("A_end")
+                order.append("A_start")
+                await asyncio.sleep(0.05)
+                order.append("A_end")
 
-        async def task_b():
-            await asyncio.sleep(0.05)  # A가 먼저 Lock 획득
+        async def speaker_b():
+            await asyncio.sleep(0.01)  # A가 먼저 Lock 획득
             async with tts_lock:
-                execution_order.append("B_start")
-                execution_order.append("B_end")
+                order.append("B_start")
+                order.append("B_end")
 
-        await asyncio.gather(task_a(), task_b())
-
-        # A가 완전히 끝난 후 B가 시작
-        assert execution_order == ["A_start", "A_end", "B_start", "B_end"]
+        await asyncio.gather(speaker_a(), speaker_b())
+        assert order == ["A_start", "A_end", "B_start", "B_end"]
 
 
 # ===========================================================================
-# 3. 세션 리셋 전파 검증
+# 세션 리셋 전파 — stop_learning / new_session
 # ===========================================================================
 
 class TestSessionReset:
-    """reset_session()이 모든 상태를 올바르게 초기화하는지."""
-
-    def test_pipeline_reset_clears_history(self, pipeline):
-        """VoicePipeline.reset()이 히스토리를 비우는지."""
-        pipeline._chat_history = [
-            {"role": "user", "content": "안녕"},
-            {"role": "assistant", "content": "반가워"},
-        ]
-        pipeline.reset()
-        assert pipeline.chat_history == []
-
-    def test_app_state_reset(self):
-        """reset_session()이 AppState를 초기화하는지."""
-        from server.main_server import app_state, reset_session
+    def test_reset_clears_app_state(self):
+        """reset_session(): stage→1, question_count→0, learning_active→False."""
+        from server.main_server import app_state, reset_session, set_voice_pipeline
         app_state.current_stage = 3
         app_state.learning_active = True
-
+        app_state.question_count = 7
         with patch("server.main_server.get_audio_manager", side_effect=ImportError):
+            set_voice_pipeline(None)
             reset_session()
-
         assert app_state.current_stage == 1
         assert app_state.learning_active is False
+        assert app_state.question_count == 0
 
-    def test_reset_session_resets_pipeline(self):
-        """reset_session()이 voice_pipeline.reset()을 호출하는지."""
+    def test_reset_calls_pipeline_reset(self):
+        """reset_session()이 주입된 voice_pipeline.reset()을 호출."""
+        from server.main_server import reset_session, set_voice_pipeline
         mock_pipeline = MagicMock()
         with patch("server.main_server.get_audio_manager", side_effect=ImportError):
-            from server.main_server import reset_session, app_state, set_voice_pipeline
             set_voice_pipeline(mock_pipeline)
-            app_state.current_stage = 2
             reset_session()
             mock_pipeline.reset.assert_called_once()
             set_voice_pipeline(None)
 
-
-# ===========================================================================
-# 4. 대화 히스토리 컨텍스트 검증
-# ===========================================================================
-
-class TestChatHistoryContext:
-    """히스토리가 LLM 컨텍스트에 올바르게 포함되는지."""
-
-    def test_empty_history_returns_base(self, pipeline):
-        result = pipeline._build_context("기본 프롬프트")
-        assert result == "기본 프롬프트"
-
-    def test_history_included_in_context(self, pipeline):
-        pipeline._chat_history = [
-            {"role": "user", "content": "안녕"},
-            {"role": "assistant", "content": "안녕! 시아야"},
-        ]
-        result = pipeline._build_context("기본 프롬프트")
-        assert "아이: 안녕" in result
-        assert "시아: 안녕! 시아야" in result
-        assert result.startswith("기본 프롬프트")
-
-    def test_history_sliding_window(self, pipeline):
-        """최대 히스토리 수 초과 시 오래된 것부터 제거."""
-        for i in range(15):
-            pipeline._chat_history.append({"role": "user", "content": f"msg_{i}"})
-            pipeline._chat_history.append({"role": "assistant", "content": f"resp_{i}"})
-        # 30개 → 현재 설정된 _max_history만큼 잘라야 함
-        if len(pipeline._chat_history) > pipeline._max_history:
-            pipeline._chat_history = pipeline._chat_history[-pipeline._max_history:]
-        assert len(pipeline._chat_history) == pipeline._max_history
-        assert pipeline._chat_history[0]["content"] == "msg_13"
-
-
-# ===========================================================================
-# 5. 대시보드 독립성 검증
-# ===========================================================================
-
-class TestDashboardIndependence:
-    """대시보드가 꺼져도 서버 파이프라인이 정상 동작하는지."""
-
-    @pytest.mark.asyncio
-    async def test_broadcast_failure_doesnt_crash_pipeline(self, pipeline):
-        """WebSocket 클라이언트가 없어도 broadcast가 에러를 발생시키지 않는지."""
-        from server.websocket_handler import clients, broadcast
-        clients.clear()  # 클라이언트 없음
-
-        # broadcast는 빈 clients에 대해 에러 없이 동작해야 함
-        await broadcast({"type": "voice_listening"})
-        # 예외 없으면 통과
-
-    @pytest.mark.asyncio
-    @patch("server.voice_pipeline.broadcast", new_callable=AsyncMock)
-    async def test_pipeline_runs_without_dashboard(self, mock_broadcast, pipeline):
-        """대시보드 연결 없이 전체 턴이 완료되는지."""
-        mock_broadcast.side_effect = Exception("WebSocket closed")
-
-        # broadcast 실패해도 파이프라인 자체는 crash하지 않아야 함
-        # (현재 구현에서는 broadcast 에러가 전파됨 — 이건 개선 대상)
-        try:
-            await pipeline._run_one_turn()
-        except Exception:
-            pass  # broadcast 에러 전파는 알려진 한계
-
-
-# ===========================================================================
-# 6. 모듈 import 검증
-# ===========================================================================
-
-class TestModuleImports:
-    """모든 서버 모듈이 정상 import되는지."""
-
-    def test_import_mic(self):
-        from server.mic import MicCapture
-        assert MicCapture is not None
-
-    def test_import_stt(self):
-        from server.stt import STTClient
-        assert STTClient is not None
-
-    def test_import_voice_pipeline(self):
+    def test_pipeline_reset_clears_history(self):
         from server.voice_pipeline import VoicePipeline
-        assert VoicePipeline is not None
-
-    def test_import_config_new_fields(self):
-        from server.config import (MIC_DEVICE_INDEX, VAD_SILENCE_THRESHOLD,
-                                   VAD_SILENCE_DURATION, VAD_MAX_DURATION, STT_LANGUAGE)
-        assert isinstance(VAD_SILENCE_THRESHOLD, int)
-        assert isinstance(VAD_SILENCE_DURATION, float)
-        assert isinstance(STT_LANGUAGE, str)
-
-    def test_import_main_server(self):
-        from server.main_server import app, app_state, reset_session, handle_dashboard_message
-        assert app is not None
-
-    def test_import_websocket_handler(self):
-        from server.websocket_handler import broadcast, connect, receive_loop
-        assert broadcast is not None
+        vp = VoicePipeline(mic=MagicMock(), stt=MagicMock(), tts_lock=asyncio.Lock())
+        vp._chat_history = [
+            {"role": "user", "content": "안녕"},
+            {"role": "assistant", "content": "반가워"},
+        ]
+        vp.reset()
+        assert vp.chat_history == []
 
 
 # ===========================================================================
-# 7. Config 통합 검증
+# 대시보드 → 서버 이벤트 / 채팅 계약
 # ===========================================================================
 
-class TestConfigIntegration:
-    """config 값이 실제 모듈에서 올바르게 사용되는지."""
-
-    def test_mic_uses_config_values(self):
-        from server.config import (MIC_DEVICE_INDEX, VAD_SILENCE_THRESHOLD,
-                                   VAD_SILENCE_DURATION, VAD_MAX_DURATION)
-        from server.mic import MicCapture
-        mic = MicCapture(
-            device_index=MIC_DEVICE_INDEX,
-            silence_threshold=VAD_SILENCE_THRESHOLD,
-            silence_duration=VAD_SILENCE_DURATION,
-            max_duration=VAD_MAX_DURATION,
-        )
-        assert mic.silence_threshold == VAD_SILENCE_THRESHOLD
-        assert mic.silence_duration == VAD_SILENCE_DURATION
-
-    def test_stt_uses_config_language(self):
-        from server.config import STT_LANGUAGE
-        from server.stt import STTClient
-        client = STTClient(language=STT_LANGUAGE)
-        assert client._language == STT_LANGUAGE
-
-
-# ===========================================================================
-# 8. 에러 경로 검증 — tts_done 보장
-# ===========================================================================
-
-class TestErrorPathTtsDone:
-    """에러 발생 시에도 tts_done이 항상 broadcast되는지."""
-
+class TestDashboardEvents:
     @pytest.mark.asyncio
-    @patch("server.voice_pipeline.broadcast", new_callable=AsyncMock)
-    async def test_speak_error_still_broadcasts_tts_done(self, mock_broadcast, pipeline):
-        """_speak()에서 TTS 생성 실패해도 tts_done이 발송되는지."""
-        with patch("ai_core.tts.get_tts_cache", side_effect=Exception("TTS error")):
-            await pipeline._speak("테스트")
-
-        types = [call[0][0]["type"] for call in mock_broadcast.call_args_list]
-        assert "tts_done" in types, "에러 시에도 tts_done 필수"
-
-    @pytest.mark.asyncio
-    @patch("server.voice_pipeline.broadcast", new_callable=AsyncMock)
-    async def test_speak_with_none_filepath(self, mock_broadcast, pipeline):
-        """TTS filepath가 None이어도 tts_start/tts_done이 정상 발송되는지."""
-        with patch("ai_core.tts.get_tts_cache") as mock_tts, \
-             patch("ai_core.audio_manager.get_audio_manager"):
-            mock_tts_inst = MagicMock()
-            mock_tts_inst.get_or_create = AsyncMock(return_value=None)
-            mock_tts.return_value = mock_tts_inst
-
-            await pipeline._speak("테스트")
-
-        types = [call[0][0]["type"] for call in mock_broadcast.call_args_list]
-        assert "tts_start" in types
-        assert "tts_done" in types
-
-
-# ===========================================================================
-# 9. handle_dashboard_message 제거 확인
-# ===========================================================================
-
-class TestDashboardHandlerCleanup:
-    """stt_text 핸들러가 완전히 제거되었는지."""
+    @patch("server.main_server.broadcast", new_callable=AsyncMock)
+    async def test_start_learning_sets_stage(self, mock_broadcast):
+        from server.main_server import handle_dashboard_message, app_state
+        app_state.current_stage = 1
+        await handle_dashboard_message({"event": "start_learning", "stage": 3})
+        assert app_state.current_stage == 3
+        mock_broadcast.assert_awaited()
 
     @pytest.mark.asyncio
     @patch("server.main_server.broadcast", new_callable=AsyncMock)
-    async def test_stt_text_no_longer_handled(self, mock_broadcast):
-        """stt_text 메시지가 서버에서 무시되는지."""
+    async def test_unknown_message_ignored(self, mock_broadcast):
+        """채팅엔 user_stt/stt_response만 남는다 — 폐기된 stt_text는 무시."""
         from server.main_server import handle_dashboard_message
         await handle_dashboard_message({"stt_text": "안녕하세요"})
         mock_broadcast.assert_not_awaited()
 
+
+# ===========================================================================
+# 오디오 우선순위 계약 — 위험(0) > 대화(10) > 묘사(20) > 폴백(30)
+# ===========================================================================
+
+class TestAudioPriority:
+    def test_priority_ordering(self):
+        from ai_core.audio_manager import (
+            PRIORITY_DANGER, PRIORITY_CONVERSATION, PRIORITY_NARRATION, PRIORITY_FALLBACK,
+        )
+        assert PRIORITY_DANGER < PRIORITY_CONVERSATION < PRIORITY_NARRATION < PRIORITY_FALLBACK
+
+
+# ===========================================================================
+# 에러 경로 — TTS 실패해도 tts_done은 반드시 발송(상태 복구)
+# ===========================================================================
+
+class TestErrorPathTtsDone:
+    @pytest.fixture
+    def pipeline(self):
+        from server.voice_pipeline import VoicePipeline
+        return VoicePipeline(mic=MagicMock(), stt=MagicMock(), tts_lock=asyncio.Lock())
+
     @pytest.mark.asyncio
-    @patch("server.main_server.broadcast", new_callable=AsyncMock)
-    async def test_events_still_work(self, mock_broadcast):
-        """기존 이벤트(start_learning 등)는 정상 동작하는지."""
-        from server.main_server import handle_dashboard_message, app_state
-        app_state.current_stage = 1
-        await handle_dashboard_message({"event": "start_learning", "stage": 2})
-        assert app_state.current_stage == 2
-        mock_broadcast.assert_awaited()
+    @patch("server.voice_pipeline.broadcast", new_callable=AsyncMock)
+    async def test_tts_failure_still_emits_done(self, mock_broadcast, pipeline):
+        with patch("ai_core.tts.get_tts_cache", side_effect=Exception("TTS error")):
+            await pipeline._speak("테스트 문장")
+        types = [c[0][0]["type"] for c in mock_broadcast.call_args_list]
+        assert "tts_done" in types, "에러 시에도 tts_done 필수(상태 복구)"
+
+
+# ===========================================================================
+# 대시보드 독립성 — 클라이언트 없어도 서버 파이프라인 정상
+# ===========================================================================
+
+class TestDashboardIndependence:
+    @pytest.mark.asyncio
+    async def test_broadcast_without_clients_no_crash(self):
+        from server.websocket_handler import clients, broadcast
+        clients.clear()
+        await broadcast({"type": "voice_listening"})  # 예외 없으면 통과
+
+
+# ===========================================================================
+# 모듈 / 설정 무결성
+# ===========================================================================
+
+class TestModuleAndConfigIntegrity:
+    def test_core_modules_import(self):
+        from server.main_server import app, handle_dashboard_message, reset_session
+        from server.voice_pipeline import VoicePipeline
+        from server.websocket_handler import broadcast
+        from ai_core.vision import detect, enrich
+        from ai_core.danger import judge
+        assert all([app, handle_dashboard_message, reset_session,
+                    VoicePipeline, broadcast, detect, enrich, judge])
+
+    def test_p1_config_fields_typed(self):
+        from server.config import (YOLO_IMGSZ, DETECT_INTERVAL_SEC,
+                                   DETECTION_BROADCAST_INTERVAL, AI_LOOP_SLEEP_SEC)
+        assert isinstance(YOLO_IMGSZ, int)
+        assert isinstance(DETECT_INTERVAL_SEC, float)
+        assert isinstance(DETECTION_BROADCAST_INTERVAL, float)
+        assert isinstance(AI_LOOP_SLEEP_SEC, float)

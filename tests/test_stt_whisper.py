@@ -70,20 +70,38 @@ def test_whisper_returns_joined_text():
     assert client.last_status == "ok"
 
 
-def test_whisper_filters_high_no_speech_prob():
-    client = WhisperSTTClient(no_speech_threshold=0.6)
-    # 환각 의심 세그먼트(no_speech_prob 높음) 폐기
-    client._model = _FakeModel([_Seg("감사합니다", no_speech_prob=0.95)])
+def test_whisper_passes_filter_thresholds_to_model():
+    """환각 필터는 클라이언트 측 OR-필터가 아니라 faster-whisper 내부에 위임한다.
+    (stt.py 주석 참고 — OR-필터는 실제 발화까지 버려서 제거됨)
+    계약: 임계값이 model.transcribe() kwargs로 전달돼야 내부 AND 필터가 동작한다."""
+    client = WhisperSTTClient(no_speech_threshold=0.7, logprob_threshold=-1.5)
+    model = _FakeModel([_Seg("앞에 의자가 있어")])
+    client._model = model
+    client._transcribe_sync(_make_wav(np.zeros(1600, dtype=np.int16)))
+
+    _audio, kwargs = model.calls[0]
+    assert kwargs["no_speech_threshold"] == 0.7
+    assert kwargs["log_prob_threshold"] == -1.5
+    assert kwargs["condition_on_previous_text"] is False  # 환각 루프 방지
+
+
+def test_whisper_no_client_side_segment_filter():
+    """내부 필터를 통과해 나온 세그먼트는 확률값과 무관하게 그대로 사용한다.
+    (과거의 no_speech_prob/avg_logprob 추가 OR-필터는 의도적으로 제거됨)"""
+    client = WhisperSTTClient(no_speech_threshold=0.6, logprob_threshold=-1.0)
+    client._model = _FakeModel([_Seg("감사합니다", no_speech_prob=0.95, avg_logprob=-3.0)])
+    text = client._transcribe_sync(_make_wav(np.zeros(1600, dtype=np.int16)))
+    assert text == "감사합니다"
+    assert client.last_status == "ok"
+
+
+def test_whisper_empty_segments_returns_unrecognized():
+    """내부 필터가 전부 걸러내(세그먼트 없음) 텍스트가 비면 None + unrecognized."""
+    client = WhisperSTTClient()
+    client._model = _FakeModel([])
     text = client._transcribe_sync(_make_wav(np.zeros(1600, dtype=np.int16)))
     assert text is None
     assert client.last_status == "unrecognized"
-
-
-def test_whisper_filters_low_logprob():
-    client = WhisperSTTClient(logprob_threshold=-1.0)
-    client._model = _FakeModel([_Seg("어쩌구", avg_logprob=-3.0)])
-    text = client._transcribe_sync(_make_wav(np.zeros(1600, dtype=np.int16)))
-    assert text is None
 
 
 def test_whisper_falls_back_to_google_on_error():

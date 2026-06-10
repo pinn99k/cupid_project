@@ -99,7 +99,9 @@ class TestSceneSlot:
         enriched = {"objects": [{"label": "person", "direction": "center"}]}
         set_scene(enriched)
         scene, ts = get_scene()
-        assert scene == enriched
+        # get_scene은 다수결 안정화 결과 + 메타키(scene_history_frames)를 반환
+        assert scene["objects"] == enriched["objects"]
+        assert scene["scene_history_frames"] == 1
         assert ts > 0.0
         # 반환본을 변형해도 슬롯 원본은 불변 (copy 반환)
         scene["objects"][0]["label"] = "X"
@@ -273,10 +275,14 @@ class TestHandleDashboardMessage:
         await handle_dashboard_message(msg)
         assert app_state.learning_active is False
         assert app_state.current_stage == 1  # reset_session이 stage도 리셋
-        mock_broadcast.assert_awaited_once()
-        sent = mock_broadcast.call_args[0][0]
-        assert sent["type"] == "ack"
-        assert sent["event"] == "stop_learning"
+        # ack + recording_state(idle, 마이크 버튼 동기화) 2건 전송
+        assert mock_broadcast.await_count == 2
+        ack = mock_broadcast.await_args_list[0].args[0]
+        assert ack["type"] == "ack"
+        assert ack["event"] == "stop_learning"
+        rec = mock_broadcast.await_args_list[1].args[0]
+        assert rec["type"] == "recording_state"
+        assert rec["state"] == "idle"
 
     @pytest.mark.asyncio
     @patch("server.main_server.broadcast", new_callable=AsyncMock)
@@ -291,10 +297,14 @@ class TestHandleDashboardMessage:
         """ai_core 없어도 크래시 안 나는지 검증."""
         msg = {"event": "new_session"}
         await handle_dashboard_message(msg)
-        mock_broadcast.assert_awaited_once()
-        sent = mock_broadcast.call_args[0][0]
-        assert sent["type"] == "ack"
-        assert sent["event"] == "new_session"
+        # ack + recording_state(idle) 2건 전송
+        assert mock_broadcast.await_count == 2
+        ack = mock_broadcast.await_args_list[0].args[0]
+        assert ack["type"] == "ack"
+        assert ack["event"] == "new_session"
+        rec = mock_broadcast.await_args_list[1].args[0]
+        assert rec["type"] == "recording_state"
+        assert rec["state"] == "idle"
 
     @pytest.mark.asyncio
     @patch("server.main_server.broadcast", new_callable=AsyncMock)

@@ -57,7 +57,8 @@ function DashboardPage({ send, connected, stage, setStage, useWs, onExit }) {
           <div style={{ flex: 1, background: 'white', borderRadius: 'var(--radius)', overflow: 'hidden', marginTop: 12 }}>
             <ChatPanel messages={messages} stage={stage} />
           </div>
-          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* 마이크 버튼 위치 고정: 상태(대기/인식/응답) 바뀌어도 행 높이·위치 불변. */}
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, minHeight: 56, flexShrink: 0 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <STTInput voiceState={voiceState} />
             </div>

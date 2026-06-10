@@ -9,6 +9,14 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
+@pytest.fixture(autouse=True)
+def force_auto_vad_mode():
+    """호출어 게이팅은 자동 VAD 모드 전용 동작 —
+    실행 환경 .env의 MANUAL_RECORDING_MODE 값에 흔들리지 않도록 고정."""
+    with patch("server.voice_pipeline.MANUAL_RECORDING_MODE", False):
+        yield
+
+
 @pytest.fixture
 def make_pipeline():
     from server.voice_pipeline import VoicePipeline

@@ -293,22 +293,25 @@ class VoicePipeline:
 
         text = text.strip()
 
-        # 2-1. 호출어 게이팅
-        from server.wake_word import parse_wake_word, WAKE_TOKENS
-        query = parse_wake_word(text)
-
-        _compact = "".join(text.split())
-        _matched = next((t for t in WAKE_TOKENS if t in _compact), None)
+        # 2-1. 호출어 게이팅 — 수동 토글 모드에서는 미적용.
+        # 운영자가 녹음 시작/종료를 직접 제어하므로 들어온 발화 전부가
+        # 시아에게 한 말이다. 호출어 요구 없이 STT 결과를 그대로 사용한다.
         print(f"[STT OUTPUT]     {text!r}")
-        print(f"[VoicePipeline] 매칭토큰={_matched!r}  파싱질문={query!r}")
+        if not MANUAL_RECORDING_MODE:
+            from server.wake_word import parse_wake_word, WAKE_TOKENS
+            query = parse_wake_word(text)
 
-        if query is None:
-            return
-        if query == "":
-            await self._play_reprompt("retry_what.wav", "호출만")
-            return
-        text = query
-        print(f"[PARSED QUESTION] {text!r}")
+            _compact = "".join(text.split())
+            _matched = next((t for t in WAKE_TOKENS if t in _compact), None)
+            print(f"[VoicePipeline] 매칭토큰={_matched!r}  파싱질문={query!r}")
+
+            if query is None:
+                return
+            if query == "":
+                await self._play_reprompt("retry_what.wav", "호출만")
+                return
+            text = query
+            print(f"[PARSED QUESTION] {text!r}")
 
         await broadcast({
             "type": "user_stt",

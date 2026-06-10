@@ -406,6 +406,56 @@ class TestRunOneTurn:
         assert vp.chat_history == []
 
     @pytest.mark.asyncio
+    async def test_manual_mode_skips_wake_word_gating(self, mock_mic, tts_lock):
+        """수동 토글 모드: 호출어 없이 말해도 STT 결과가 그대로 LLM까지 간다."""
+        stt = MagicMock()
+        stt.transcribe = AsyncMock(return_value="오늘 기분이 어때")  # 호출어 없음
+        vp = VoicePipeline(mic=mock_mic, stt=stt, tts_lock=tts_lock)
+        vp.start()
+
+        mock_am = MagicMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        mock_tts_cache = MagicMock()
+        mock_tts_cache.get_or_create = AsyncMock(return_value="/tmp/fake.mp3")
+        mock_llm = AsyncMock(return_value="좋아! 너는 어때?")
+
+        with patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch("server.voice_pipeline.MANUAL_RECORDING_MODE", True), \
+             patch("ai_core.llm_client.call_async", new=mock_llm), \
+             patch("ai_core.llm_client.SYSTEM_PROMPT", "프롬프트"), \
+             patch("ai_core.tts.get_tts_cache", return_value=mock_tts_cache), \
+             patch("ai_core.audio_manager.get_audio_manager", return_value=mock_am):
+            await vp._run_one_turn()
+
+        # 호출어 게이팅에 막히지 않고 발화 원문 그대로 LLM 호출
+        mock_llm.assert_awaited_once()
+        assert mock_llm.await_args.args[1] == "오늘 기분이 어때"
+        assert vp.chat_history[0] == {"role": "user", "content": "오늘 기분이 어때"}
+
+    @pytest.mark.asyncio
+    async def test_manual_mode_keeps_wake_word_in_text(self, mock_mic, mock_stt, tts_lock):
+        """수동 토글 모드: 호출어가 섞여 있어도 떼지 않고 통째로 넘긴다."""
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)  # "시아야 안녕하세요"
+        vp.start()
+
+        mock_am = MagicMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        mock_tts_cache = MagicMock()
+        mock_tts_cache.get_or_create = AsyncMock(return_value="/tmp/fake.mp3")
+        mock_llm = AsyncMock(return_value="안녕! 반가워")
+
+        with patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch("server.voice_pipeline.MANUAL_RECORDING_MODE", True), \
+             patch("ai_core.llm_client.call_async", new=mock_llm), \
+             patch("ai_core.llm_client.SYSTEM_PROMPT", "프롬프트"), \
+             patch("ai_core.tts.get_tts_cache", return_value=mock_tts_cache), \
+             patch("ai_core.audio_manager.get_audio_manager", return_value=mock_am):
+            await vp._run_one_turn()
+
+        mock_llm.assert_awaited_once()
+        assert mock_llm.await_args.args[1] == "시아야 안녕하세요"
+
+    @pytest.mark.asyncio
     async def test_proc_delay_recorded_per_turn(self, mock_mic, mock_stt, tts_lock):
         """성공 턴마다 proc_delay_ms(발화종료→첫소리 처리 지연)가 latency_logger에 기록된다."""
         vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)
@@ -439,6 +489,7 @@ class TestRunOneTurn:
         mock_tts_cache.get_or_create = AsyncMock(return_value=None)
 
         with patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch("server.voice_pipeline.MANUAL_RECORDING_MODE", False), \
              patch("ai_core.llm_client.call_async", new=AsyncMock(return_value="응답")), \
              patch("ai_core.llm_client.SYSTEM_PROMPT", "프롬프트"), \
              patch("ai_core.tts.get_tts_cache", return_value=mock_tts_cache), \

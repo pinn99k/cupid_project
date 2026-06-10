@@ -383,6 +383,51 @@ class TestRunOneTurn:
         assert vp.chat_history == []
 
     @pytest.mark.asyncio
+    async def test_whitespace_llm_response_treated_as_failure(self, mock_mic, mock_stt, tts_lock):
+        """call_async가 공백뿐인 문자열 반환 → 빈 응답과 동일 처리.
+        (가드 없으면 split_sentences()가 []를 반환해 sentences[0]에서 IndexError)"""
+        mock_am = MagicMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        mock_am.wait_until_idle = AsyncMock()
+        mock_tts_cache = MagicMock()
+        mock_tts_cache.get_or_create = AsyncMock(return_value=None)
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock, audio_manager=mock_am)
+        vp.start()
+        vp._cooldown_steps = [0]  # 쿨다운 sleep 제거(테스트 속도)
+
+        with patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch("ai_core.llm_client.call_async", new=AsyncMock(return_value="   ")), \
+             patch("ai_core.llm_client.SYSTEM_PROMPT", "프롬프트"), \
+             patch("ai_core.tts.get_tts_cache", return_value=mock_tts_cache), \
+             patch("ai_core.audio_manager.get_audio_manager", return_value=mock_am):
+            await vp._run_one_turn()  # IndexError 없이 끝나야 함
+
+        mock_tts_cache.get_or_create.assert_not_called()
+        assert vp.chat_history == []
+
+    @pytest.mark.asyncio
+    async def test_proc_delay_recorded_per_turn(self, mock_mic, mock_stt, tts_lock):
+        """성공 턴마다 proc_delay_ms(발화종료→첫소리 처리 지연)가 latency_logger에 기록된다."""
+        vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)
+        vp.start()
+
+        mock_am = MagicMock()
+        mock_am.wait = AsyncMock(return_value=True)
+        mock_tts_cache = MagicMock()
+        mock_tts_cache.get_or_create = AsyncMock(return_value="/tmp/fake.mp3")
+
+        with patch(BROADCAST_PATH, new=AsyncMock()), \
+             patch("server.voice_pipeline._rec") as mock_rec, \
+             patch("ai_core.llm_client.call_async", new=AsyncMock(return_value="응답이야")), \
+             patch("ai_core.llm_client.SYSTEM_PROMPT", "프롬프트"), \
+             patch("ai_core.tts.get_tts_cache", return_value=mock_tts_cache), \
+             patch("ai_core.audio_manager.get_audio_manager", return_value=mock_am):
+            await vp._run_one_turn()
+
+        recorded_keys = {call.args[0] for call in mock_rec.call_args_list}
+        assert "proc_delay_ms" in recorded_keys
+
+    @pytest.mark.asyncio
     async def test_history_grows_after_turn(self, mock_mic, mock_stt, tts_lock):
         """성공적인 턴 후 chat_history에 2개 항목 추가."""
         vp = VoicePipeline(mic=mock_mic, stt=mock_stt, tts_lock=tts_lock)

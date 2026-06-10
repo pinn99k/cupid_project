@@ -417,7 +417,9 @@ class VoicePipeline:
                     await self._cooldown_on_fail()
                     return
 
-                if not response:
+                if not response or not response.strip():
+                    # 공백뿐인 응답도 차단 — 통과시키면 split_sentences가 빈 리스트를
+                    # 반환해 아래 sentences[0]에서 IndexError로 턴이 통째로 사라진다.
                     print("[VoicePipeline] LLM 응답 없음")
                     await self._play_fallback("LLM 응답 없음")
                     await self._cooldown_on_fail()
@@ -460,6 +462,7 @@ class VoicePipeline:
         _rec("tts_cache_ms" if _is_cache else "tts_gen_ms", _tts_elapsed * 1000)
         # 발화종료 기준 처리 지연 = STT+LLM+첫문장TTS (녹음시간 제외 → 체감 지연의 실제값)
         _proc_delay = time.perf_counter() - _speech_end
+        _rec("proc_delay_ms", _proc_delay * 1000)
         print(
             f"[TIMING] 첫문장 TTS={'캐시' if _is_cache else '생성'}={_tts_elapsed:.2f}s"
             f" → 발화종료후 첫소리까지={_proc_delay:.2f}s (녹음 {_rec_dur:.2f}s 제외)"

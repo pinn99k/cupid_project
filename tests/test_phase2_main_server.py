@@ -126,10 +126,13 @@ def test_ack_broadcast_stop_learning():
     asyncio.run(_run())
 
     assert app_state.learning_active is False
-    assert len(broadcast_calls) == 1
+    # ack + recording_state(idle, 마이크 버튼 동기화) 2건 전송
+    assert len(broadcast_calls) == 2
     ack = broadcast_calls[0]
     assert ack["type"] == "ack"
     assert ack["event"] == "stop_learning"
+    assert broadcast_calls[1]["type"] == "recording_state"
+    assert broadcast_calls[1]["state"] == "idle"
     print(f"[PASS] Case 1: ack broadcast → {ack}")
 
     app_state.current_stage = 1
@@ -270,11 +273,13 @@ def test_new_session_error_handling():
 
     asyncio.run(_run())
 
-    # 크래시 없이 ack broadcast 전송
-    assert len(broadcast_calls) == 1
+    # 크래시 없이 ack + recording_state(idle) 전송
+    assert len(broadcast_calls) == 2
     ack = broadcast_calls[0]
     assert ack["type"] == "ack"
     assert ack["event"] == "new_session"
+    assert broadcast_calls[1]["type"] == "recording_state"
+    assert broadcast_calls[1]["state"] == "idle"
     print(f"[PASS] Case 1: ai_core 에러 → 크래시 없이 ack 전송: {ack}")
 
     print()

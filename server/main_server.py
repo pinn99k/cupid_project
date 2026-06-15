@@ -373,6 +373,28 @@ async def health():
     }
 
 
+@app.post("/api/toggle_recording")
+@app.get("/api/toggle_recording")
+async def toggle_recording():
+    """수동 녹음 토글 (Hammerspoon 이어폰 가운데 버튼 등 외부 트리거용).
+    현재 상태에 따라 start/stop 호출 — 화면 포커스와 무관하게 동작.
+    백그라운드 프로세스 없음(=서버 안정성 영향 없는 단순 라우트)."""
+    if not _voice_pipeline:
+        return {"ok": False, "reason": "no_pipeline", "state": "idle"}
+    state = getattr(_voice_pipeline, "recording_state", "idle")
+    if state == "idle":
+        ok = await _voice_pipeline.on_manual_start_recording()
+        action = "start"
+    elif state == "recording":
+        ok = await _voice_pipeline.on_manual_stop_recording()
+        action = "stop"
+    else:
+        ok, action = False, "ignored"
+    new_state = getattr(_voice_pipeline, "recording_state", "idle")
+    print(f"[HTTP] toggle_recording: {state} → {action}(ok={ok}) → {new_state}")
+    return {"ok": ok, "action": action, "prev": state, "state": new_state}
+
+
 @app.get("/preflight")
 async def preflight():
     from server.preflight import run_preflight

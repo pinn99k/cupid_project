@@ -57,6 +57,7 @@ from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX, CAM_SOURCE,
 from server.mic import MicCapture
 from server.stt import create_stt_client
 from server.voice_pipeline import VoicePipeline
+from server.bluetooth_button_listener import BluetoothButtonListener
 from utils.latency_logger import log, elapsed, configure as configure_latency, get_logger
 
 # ---------------------------------------------------------------------------
@@ -173,6 +174,7 @@ async def _ultrasonic_loop():
             _set_distance(state.value(time.monotonic()))
             await asyncio.sleep(ULTRASONIC_POLL_SEC)
 _voice_task: asyncio.Task | None = None
+_bt_button_listener = None  # 이어폰 가운데 버튼 리스너
 _warmup_task: asyncio.Task | None = None
 _narration_in_progress = False
 _narration_task: asyncio.Task | None = None
@@ -563,7 +565,7 @@ async def _warmup(tts, stt=None):
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup():
-    global _frame_task, _ai_task, _voice_task, _ultrasonic_task, _warmup_task, voice_pipeline
+    global _frame_task, _ai_task, _voice_task, _ultrasonic_task, _warmup_task, voice_pipeline, _bt_button_listener
     print("[SIA] 초기화 시작...")
     # Phase 0 계측: print 게이팅(SIA_DEBUG) + latency_log.json 저장 위치 설정
     configure_latency(log_dir=LATENCY_LOG_DIR, verbose=SIA_DEBUG)
@@ -627,13 +629,40 @@ async def startup():
     set_cancel_narration(cancel_narration)
     _voice_task = asyncio.create_task(voice_pipeline.run())
     _voice_task.add_done_callback(_task_done_callback)
+
+    # 골전도 이어폰 가운데 버튼 → 마이크 토글 (수동 모드 전용).
+    # 버튼은 HFP(이어폰 마이크 열림) 상태에서 "Received call hangup event"를 발생시키는데,
+    # 수동 모드는 마이크를 항상 열어두므로(start_manual_capture_stream) 계속 작동한다.
+    if MANUAL_RECORDING_MODE:
+        loop = asyncio.get_running_loop()
+
+        async def _bt_button_toggle():
+            if voice_pipeline is None:
+                return
+            state = voice_pipeline.recording_state
+            if state == "idle":
+                print("[BT_BUTTON] toggle -> start_recording")
+                await voice_pipeline.on_manual_start_recording()
+            elif state == "recording":
+                print("[BT_BUTTON] toggle -> stop_recording")
+                await voice_pipeline.on_manual_stop_recording()
+            else:
+                print(f"[BT_BUTTON] toggle 무시 (state={state})")
+
+        _bt_button_listener = BluetoothButtonListener(loop, _bt_button_toggle)
+        _bt_button_listener.start()
+    else:
+        print("[BT_BUTTON] 비활성 (MANUAL_RECORDING_MODE=false)")
     print("[SIA] 초기화 완료. 프레임 루프 + AI 루프 + 음성 파이프라인 시작.")
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    global _frame_task, _ai_task, _voice_task, _ultrasonic_task, _warmup_task, voice_pipeline
+    global _frame_task, _ai_task, _voice_task, _ultrasonic_task, _warmup_task, voice_pipeline, _bt_button_listener
     print("[SIA] 서버 종료 시작...")
+    if _bt_button_listener:
+        _bt_button_listener.stop()
+        _bt_button_listener = None
     if voice_pipeline:
         voice_pipeline.stop()
     for t in (_frame_task, _ai_task, _voice_task, _ultrasonic_task, _warmup_task):

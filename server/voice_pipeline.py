@@ -20,6 +20,12 @@ _VISION_RE = re.compile(
     r"뭐.*있|있냐|있어|보여|보이|위험|사람|계단|앞|왼|오른|장애물|찾|감지|물체|뭐가|주변|근처|어느|어디|쪽|가야|이동|길"
 )
 
+# 이동 방향을 묻는 질문은 LLM을 거치지 않고 YOLO 기반 navigation_hint를 바로 사용한다.
+# 방향 누락 방지 + LLM 호출 지연 제거.
+_NAVIGATION_RE = re.compile(
+    r"어느.*쪽|어디.*가|어디로|쪽으로|가야|이동|지나가|피해|피하|길|방향"
+)
+
 # VQA 에서 허용하는 장면 최대 나이.
 # Stage 전환 후 _ai_loop 이 set_scene(None)으로 클리어하지만,
 # YOLO가 느릴 때 오래된 장면이 남아있는 경우를 이중으로 방어.
@@ -92,8 +98,11 @@ class VoicePipeline:
         # DEMO_MODE는 수용(1)에서만 적용, 방향(2)+는 실제 LLM/VQA 사용.
         self._current_stage = 1
         self._recording_state = "idle"
+        self._state_entered_at = time.monotonic()  # 현재 상태 진입 시각(막힘 감지용)
         self._manual_turn_lock = asyncio.Lock()
         self._manual_safety_task: asyncio.Task | None = None
+        self._manual_turn_task: asyncio.Task | None = None  # 처리 중인 턴(막힘 복구용)
+        self._recovering = False  # 강제복구 진행 중 플래그(중복 방지)
 
     async def _set_recording_state(self, state: str):
         """운영자 마이크 토글 상태를 대시보드에 동기화."""
@@ -101,6 +110,7 @@ class VoicePipeline:
             return
         old = self._recording_state
         self._recording_state = state
+        self._state_entered_at = time.monotonic()
         print(f"[WS_STATE] recording_state changed: {old} → {state}")
         await broadcast({
             "type": "recording_state",
@@ -154,6 +164,8 @@ class VoicePipeline:
             and not self._manual_safety_task.done()
         ):
             self._manual_safety_task.cancel()
+        # 막힘 복구가 이 턴을 취소할 수 있도록 현재 태스크를 보관.
+        self._manual_turn_task = asyncio.current_task()
         async with self._manual_turn_lock:
             await self._set_recording_state("processing")
             stop_at = time.perf_counter()
@@ -184,6 +196,16 @@ class VoicePipeline:
             try:
                 if MANUAL_RECORDING_MODE:
                     self._mic.start_manual_capture_stream()
+                    # 막힘 워치독: processing/speaking 이 비정상적으로 오래 지속되면
+                    # (재생/마이크/STT 등 어딘가 hang) 강제복구해 버튼 데드락을 푼다.
+                    # 정상 데모 응답은 수 초 내 끝나므로 STUCK_RECOVER_SEC(12s)를 안 넘는다.
+                    STUCK_RECOVER_SEC = 12.0
+                    if (
+                        not self._recovering
+                        and self._recording_state in ("processing", "speaking")
+                        and (time.monotonic() - self._state_entered_at) > STUCK_RECOVER_SEC
+                    ):
+                        await self.force_recover_stuck(reason="stuck_timeout")
                     await asyncio.sleep(0.3)
                     continue
                 await self._run_one_turn()
@@ -280,6 +302,9 @@ class VoicePipeline:
 
         if not text or not text.strip():
             status = getattr(self._stt, "last_status", "unrecognized")
+            # ⚠️ 위에서 voice_processing("생각하는 중...")을 이미 보냈으므로,
+            #    여기서 return 하기 전에 반드시 voice_idle 로 말풍선을 풀어야 한다.
+            #    (안 그러면 대시보드가 "생각하는 중..."에 영영 멈춤 — 실측 버그)
             if status == "error":
                 print("[VoicePipeline] STT 시스템 오류 → 재청취")
                 await broadcast({
@@ -287,8 +312,9 @@ class VoicePipeline:
                     "message": "STT 시스템 오류(네트워크/엔진)",
                     "timestamp": int(time.time() * 1000),
                 })
-                return
-            print("[VoicePipeline] 인식 불가(잡음 추정) → 조용히 재청취")
+            else:
+                print("[VoicePipeline] 인식 불가(잡음 추정) → 조용히 재청취")
+            await broadcast({"type": "voice_idle", "timestamp": int(time.time() * 1000)})
             return
 
         text = text.strip()
@@ -338,6 +364,7 @@ class VoicePipeline:
         from ai_core.llm_client import call_async, SYSTEM_PROMPT, VQA_PROMPT
 
         is_vision_query = bool(_VISION_RE.search(text))
+        is_navigation_query = bool(_NAVIGATION_RE.search(text))
         cache_eligible = not is_vision_query
 
         response: str | None = None
@@ -367,17 +394,24 @@ class VoicePipeline:
                     from ai_core.scene_text import scene_to_korean
                     scene_text = scene_to_korean(scene)
                     nav_hint = get_navigation_hint(scene.get("objects", []))
-                    base_prompt = (
-                        f"{VQA_PROMPT}\n\n"
-                        f"[현재 장면] {scene_text}\n"
-                        f"[보행 안내 힌트]\n{nav_hint['prompt_text']}"
-                    )
-                    print(
-                        f"[VoicePipeline] VQA 모드(Vision 질문, 장면 경과={scene_age_ms:.0f}ms)"
-                        f"  system={len(base_prompt)}자 user={len(text)}자"
-                        f" scene={len(scene_text)}자: {scene_text[:80]!r}"
-                        f" nav={nav_hint!r}"
-                    )
+                    if is_navigation_query:
+                        response = nav_hint["answer_text"]
+                        print(
+                            f"[VoicePipeline] NAV 직접 응답(장면 경과={scene_age_ms:.0f}ms)"
+                            f" answer={response!r} nav={nav_hint!r}"
+                        )
+                    else:
+                        base_prompt = (
+                            f"{VQA_PROMPT}\n\n"
+                            f"[현재 장면] {scene_text}\n"
+                            f"[보행 안내 힌트]\n{nav_hint['prompt_text']}"
+                        )
+                        print(
+                            f"[VoicePipeline] VQA 모드(Vision 질문, 장면 경과={scene_age_ms:.0f}ms)"
+                            f"  system={len(base_prompt)}자 user={len(text)}자"
+                            f" scene={len(scene_text)}자: {scene_text[:80]!r}"
+                            f" nav={nav_hint!r}"
+                        )
                 else:
                     age_str = f"{scene_age_ms:.0f}ms" if scene is not None else "없음"
                     print(
@@ -795,3 +829,49 @@ class VoicePipeline:
     def recording_state(self) -> str:
         """대시보드 운영자 마이크 버튼 상태."""
         return self._recording_state
+
+    @property
+    def seconds_in_state(self) -> float:
+        """현재 recording_state 에 머문 시간(초). 막힘 감지용."""
+        return time.monotonic() - self._state_entered_at
+
+    async def force_recover_stuck(self, reason: str = "watchdog") -> None:
+        """processing/speaking 에서 막힌 턴을 강제로 풀어 idle 로 되돌린다.
+
+        왜 필요한가: am.wait(재생대기)/마이크정지/STT 등 어느 await가 멈추면
+        _manual_turn_lock 이 안 풀려 토글 버튼이 영구 데드락된다("몇 번 되다 죽음").
+        여기서 (1) 재생 중단으로 막힌 am.wait 를 깨우고 (2) 그래도 안 풀리면 턴
+        태스크를 취소해 lock 을 해제하고 (3) 상태를 idle 로 강제 복귀시킨다."""
+        if self._recovering:
+            return
+        self._recovering = True
+        try:
+            print(f"[WATCHDOG] 막힘 강제복구 시작 (reason={reason}, state={self._recording_state})")
+            # 1) 재생 중단 → 막힌 am.wait()가 즉시 깨어 턴이 스스로 풀리도록.
+            try:
+                am = self._audio_manager
+                if am is None:
+                    from ai_core.audio_manager import get_audio_manager
+                    am = get_audio_manager()
+                am.stop(clear_queue=True)
+            except Exception as e:
+                print(f"[WATCHDOG] 오디오 중단 실패(무시): {e}")
+            # 2) 마이크 정리
+            try:
+                self._mic.stop_manual_recording()
+            except Exception:
+                pass
+            # 3) 턴이 스스로 풀릴 시간을 잠깐 준 뒤, 안 풀렸으면 태스크 취소.
+            await asyncio.sleep(0.2)
+            t = self._manual_turn_task
+            if t is not None and not t.done():
+                print("[WATCHDOG] 턴이 안 풀림 → 태스크 취소(lock 해제)")
+                t.cancel()
+                await asyncio.sleep(0.1)
+            # 4) 상태 강제 idle (대시보드 버튼 즉시 사용가능)
+            self._active = False
+            await self._set_recording_state("idle")
+            await broadcast({"type": "voice_idle", "timestamp": int(time.time() * 1000)})
+            print("[WATCHDOG] 강제복구 완료 → idle")
+        finally:
+            self._recovering = False

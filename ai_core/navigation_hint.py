@@ -1,15 +1,18 @@
 """YOLO objects -> 보행 방향 안내 힌트.
 
 LLM이 장면을 추상적으로 해석하지 않도록, VQA 프롬프트에 넣을
-"현재 감지 / 권장 이동" 구조화 정보를 만든다.
+"방향별 감지 / 막힌 방향 / 권장 이동 / 정답 초안" 구조화 정보를 만든다.
 """
 
 from __future__ import annotations
 
-from ai_core.scene_text import DIRECTION_KR, label_kr
+from ai_core.scene_text import label_kr
 
 
-PERSON_LABELS = {"person", "사람", "friend", "친구"}
+_DIR_ORDER = ("left", "center", "right")
+_SUMMARY_ORDER = ("center", "left", "right")
+_DIR_KR_NOUN = {"left": "왼쪽", "center": "앞", "right": "오른쪽"}
+_DIR_KR_MOVE = {"left": "왼쪽", "center": "정면", "right": "오른쪽"}
 
 
 def get_navigation_hint(objects) -> dict[str, str]:
@@ -20,76 +23,116 @@ def get_navigation_hint(objects) -> dict[str, str]:
 
     Returns:
         {
-            "obstacle_summary": "앞에 사람",
+            "obstacle_summary": "앞에 사람, 왼쪽에 의자",
             "direction_hint": "오른쪽으로 조금 이동해보자.",
-            "prompt_text": "현재 감지: ...\n권장 이동: ..."
+            "answer_text": "앞에 사람이 있고 왼쪽에는 의자가 있어. 오른쪽으로 조금 이동해보자.",
+            "prompt_text": "방향별 감지: ...\n막힌 방향: ...\n권장 이동: ...\n정답 초안: ..."
         }
     """
     normalized = [obj for obj in objects or [] if isinstance(obj, dict)]
-    person_dirs = _directions_for_labels(normalized, PERSON_LABELS)
+    direction_map = _direction_map(normalized)
+    blocked_dirs = {d for d, items in direction_map.items() if items}
 
-    if person_dirs:
-        obstacle_summary, direction_hint = _person_hint(person_dirs)
-    elif normalized:
-        obstacle_summary, direction_hint = _generic_obstacle_hint(normalized)
+    if normalized:
+        obstacle_summary = _summary_from_direction_map(direction_map)
+        direction_hint = _direction_hint(blocked_dirs)
     else:
         obstacle_summary = "앞에 특별한 장애물은 보이지 않음"
         direction_hint = "정면으로 천천히 걸어가보자."
 
+    answer_text = _answer_text(obstacle_summary, direction_hint, bool(normalized))
+    blocked_text = _blocked_text(blocked_dirs)
+    open_text = _open_text(blocked_dirs)
+
     return {
         "obstacle_summary": obstacle_summary,
         "direction_hint": direction_hint,
-        "prompt_text": f"현재 감지: {obstacle_summary}\n권장 이동: {direction_hint}",
+        "answer_text": answer_text,
+        "blocked_directions": blocked_text,
+        "open_directions": open_text,
+        "prompt_text": (
+            f"방향별 감지: {obstacle_summary}\n"
+            f"막힌 방향: {blocked_text}\n"
+            f"열린 방향: {open_text}\n"
+            f"권장 이동: {direction_hint}\n"
+            f"정답 초안: {answer_text}"
+        ),
     }
 
 
-def _directions_for_labels(objects: list[dict], labels: set[str]) -> set[str]:
-    dirs = set()
+def _direction_map(objects: list[dict]) -> dict[str, list[dict]]:
+    grouped = {direction: [] for direction in _DIR_ORDER}
     for obj in objects:
-        label = str(obj.get("label", "")).lower()
         direction = obj.get("direction")
-        if label in labels and direction in {"left", "center", "right"}:
-            dirs.add(direction)
-    return dirs
+        if direction in grouped:
+            grouped[direction].append(obj)
+    for direction in grouped:
+        grouped[direction].sort(key=_area, reverse=True)
+    return grouped
 
 
-def _person_hint(dirs: set[str]) -> tuple[str, str]:
-    if "center" in dirs and "right" in dirs:
-        return "앞과 오른쪽에 사람", "왼쪽으로 이동해보자."
-    if "center" in dirs and "left" in dirs:
-        return "앞과 왼쪽에 사람", "오른쪽으로 이동해보자."
-    if "center" in dirs:
-        return "앞에 사람", "오른쪽으로 조금 이동해보자."
-    if "left" in dirs:
-        return "왼쪽에 사람", "오른쪽으로 이동해보자."
-    if "right" in dirs:
-        return "오른쪽에 사람", "왼쪽으로 이동해보자."
-    return "사람", "잠깐 멈춰서 안전한 방향을 확인해보자."
+def _summary_from_direction_map(direction_map: dict[str, list[dict]]) -> str:
+    parts = []
+    for direction in _SUMMARY_ORDER:
+        items = direction_map.get(direction, [])
+        if not items:
+            continue
+        names = _unique_names(items[:2])
+        direction_kr = _DIR_KR_NOUN[direction]
+        parts.append(f"{direction_kr}에 {'와 '.join(names)}")
+    return ", ".join(parts) if parts else "앞에 특별한 장애물은 보이지 않음"
 
 
-def _generic_obstacle_hint(objects: list[dict]) -> tuple[str, str]:
-    directions = {obj.get("direction") for obj in objects}
-    main = _largest_object(objects)
-    name = label_kr(str(main.get("label", "장애물")))
-
-    if "center" in directions and "right" in directions:
-        return f"앞과 오른쪽에 {name}", "왼쪽으로 이동해보자."
-    if "center" in directions and "left" in directions:
-        return f"앞과 왼쪽에 {name}", "오른쪽으로 이동해보자."
-    if "center" in directions:
-        return f"앞에 {name}", "오른쪽으로 조금 이동해보자."
-    if "left" in directions:
-        return f"왼쪽에 {name}", "오른쪽으로 이동해보자."
-    if "right" in directions:
-        return f"오른쪽에 {name}", "왼쪽으로 이동해보자."
-    return f"{name}", "잠깐 멈춰서 안전한 방향을 확인해보자."
+def _unique_names(objects: list[dict]) -> list[str]:
+    names = []
+    seen = set()
+    for obj in objects:
+        name = label_kr(str(obj.get("label", "장애물")))
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names or ["장애물"]
 
 
-def _largest_object(objects: list[dict]) -> dict:
-    def area(obj: dict) -> float:
-        try:
-            return float(obj.get("bbox_ratio", 0.0))
-        except (TypeError, ValueError):
-            return 0.0
+def _direction_hint(blocked_dirs: set[str]) -> str:
+    if blocked_dirs == {"left", "center", "right"}:
+        return "잠깐 멈추고 선생님과 안전한 길을 확인해보자."
+    if "center" in blocked_dirs and "right" in blocked_dirs:
+        return "왼쪽으로 조금 이동해보자."
+    if "center" in blocked_dirs and "left" in blocked_dirs:
+        return "오른쪽으로 조금 이동해보자."
+    if "center" in blocked_dirs:
+        return "오른쪽으로 조금 이동해보자."
+    if blocked_dirs == {"left", "right"}:
+        return "정면으로 천천히 걸어가보자."
+    if "left" in blocked_dirs:
+        return "오른쪽으로 이동해보자."
+    if "right" in blocked_dirs:
+        return "왼쪽으로 이동해보자."
+    return "정면으로 천천히 걸어가보자."
 
-    return max(objects, key=area) if objects else {}
+
+def _answer_text(obstacle_summary: str, direction_hint: str, has_objects: bool) -> str:
+    if not has_objects:
+        return "앞에 특별한 장애물은 보이지 않아. 정면으로 천천히 걸어가보자."
+    return f"{obstacle_summary} 있어. {direction_hint}"
+
+
+def _blocked_text(blocked_dirs: set[str]) -> str:
+    if not blocked_dirs:
+        return "없음"
+    return ", ".join(_DIR_KR_NOUN[d] for d in _DIR_ORDER if d in blocked_dirs)
+
+
+def _open_text(blocked_dirs: set[str]) -> str:
+    open_dirs = [d for d in _DIR_ORDER if d not in blocked_dirs]
+    if not open_dirs:
+        return "없음"
+    return ", ".join(_DIR_KR_MOVE[d] for d in open_dirs)
+
+
+def _area(obj: dict) -> float:
+    try:
+        return float(obj.get("bbox_ratio", 0.0))
+    except (TypeError, ValueError):
+        return 0.0

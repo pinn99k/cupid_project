@@ -42,6 +42,12 @@ PRIORITY_CONVERSATION = 10
 PRIORITY_NARRATION = 20
 PRIORITY_FALLBACK = 30
 PLAYBACK_START_GRACE_SEC = 0.15
+# 무한 재생/대기 방지 상한. BT 이어폰이 재생 중 끊기면 pygame get_busy()가 영영
+# True로 남아 워커가 finished.set()을 못 해 wait()가 영구 블록 → 상위 TTS/턴 lock
+# 데드락 → 토글 버튼이 완전히 먹통이 된다(실측 증상: "몇 번 되다 갑자기 안 됨").
+# 데모 음성은 길어야 수 초이므로 아래 상한이 정상 재생을 자르지 않는다.
+PLAYBACK_HARD_MARGIN_SEC = 5.0   # _play_file: 길이 + 이 여유 지나면 강제 종료
+MAX_PLAYBACK_WAIT_SEC = 15.0     # wait(): 이 시간 지나면 강제 취소 후 진행
 
 
 @dataclass(order=True)
@@ -112,10 +118,26 @@ class AudioManager:
         return request
 
     async def wait(self, request: PlaybackRequest | None) -> bool:
-        """실제 재생 완료까지 비동기 대기. 파일 누락 시 False."""
+        """실제 재생 완료까지 비동기 대기. 파일 누락 시 False.
+
+        ⚠️ 무한 대기 금지: 재생이 (BT 끊김 등으로) 안 끝나면 finished 가 영영 set 되지
+        않아 여기서 영구 블록되고, 이를 감싼 _tts_lock/_manual_turn_lock 이 안 풀려
+        토글 버튼이 데드락된다. MAX_PLAYBACK_WAIT_SEC 초과 시 강제 취소하고 진행한다."""
         if request is None:
             return False
-        await asyncio.to_thread(request.finished.wait)
+        done = await asyncio.to_thread(request.finished.wait, MAX_PLAYBACK_WAIT_SEC)
+        if not done:
+            print(
+                f"[AUDIO] ⚠️ 재생 완료 대기 {MAX_PLAYBACK_WAIT_SEC}s 초과 → "
+                f"강제 취소(데드락 방지) file={Path(request.filepath).name}"
+            )
+            request.cancelled.set()
+            try:
+                self.stop(clear_queue=True)
+            except Exception as e:
+                print(f"[AUDIO] 강제 취소 중 stop 오류(무시): {e}")
+            # ⚠️ finished.set()은 무슨 일이 있어도 실행돼야 한다(상위 lock 해제 보장).
+            request.finished.set()
         return not request.cancelled.is_set()
 
     async def wait_until_idle(self, timeout: float = 30.0):
@@ -196,9 +218,22 @@ class AudioManager:
             # WAV 길이보다 일찍 완료 처리하면 TTS 락이 풀리고 문장 끝이 잘릴 수 있다.
             duration = AudioManager._audio_duration_seconds(request.filepath)
             minimum_end = time.monotonic() + max(duration, PLAYBACK_START_GRACE_SEC)
+            # 무한 재생 방지 하드 데드라인: 길이 + 여유를 넘기면 강제 종료한다.
+            # (BT 끊김으로 get_busy()가 영영 True여도 빠져나와 finally의 finished.set 보장)
+            hard_deadline = minimum_end + PLAYBACK_HARD_MARGIN_SEC
             clock = pygame.time.Clock()
             while not request.cancelled.is_set():
                 if time.monotonic() >= minimum_end and not pygame.mixer.music.get_busy():
+                    break
+                if time.monotonic() >= hard_deadline:
+                    print(
+                        f"[AUDIO] ⚠️ 재생 하드 데드라인 초과 → 강제 종료(데드락 방지)"
+                        f" file={Path(request.filepath).name}"
+                    )
+                    try:
+                        pygame.mixer.music.stop()
+                    except Exception:
+                        pass
                     break
                 clock.tick(50)
             log("audio_play_end")

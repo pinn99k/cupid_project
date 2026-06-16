@@ -10,7 +10,9 @@ DEMO_VOICE_DIR = Path("server/demo_voices")
 
 SCENARIO_KEYWORDS: dict[str, str] = {
     r"안녕|반가워": "greeting.wav",
-    r"누구|뭐야|설명|소개": "intro.wav",
+    r"몇\s*살|나이": "age.wav",
+    r"엠비티아이|MBTI|mbti": "mbti.wav",
+    r"누구|소개|설명|무슨\s*일|뭐\s*하는": "intro.wav",
     r"같이|가자": "lets_go.wav",
     r"뭐 있|뭐가 있|보여|있어": "_scene_aware",
     r"다 왔|도착": "arrival.wav",
@@ -21,6 +23,8 @@ _PERSON_LABELS = {"person", "사람", "friend", "친구"}
 
 DEMO_TEXT_MAP: dict[str, str] = {
     "greeting.wav": "안녕! 반가워! 나는 시아야.",
+    "age.wav": "시아는 7살이야! 친구랑 비슷한 나이지?",
+    "mbti.wav": "시아는 ESFJ야! 사람들과 어울리는 걸 정말 좋아해!",
     "intro.wav": (
         "나는 시아야, 시각장애 친구들이 안전하게 걸을 수 있게 도와주는 AI 친구야. "
         "카메라로 주변을 보고 앞에 위험한 게 있으면 알려줄게!"
@@ -32,7 +36,8 @@ DEMO_TEXT_MAP: dict[str, str] = {
     "person_right_far.wav": "오른쪽에 친구가 보여! 왼쪽으로 가볼까?",
     "arrival.wav": "다 왔어! 정말 잘했어!",
     "all_clear.wav": "앞에 아무것도 없어! 안전해, 천천히 가도 돼.",
-    "fallback.wav": "응? 다시 한 번 말해줄래?",
+    "difficult.wav": "어! 그건 시아가 대답하기 어려운 질문이야.",
+    "fallback.wav": "어! 그건 시아가 대답하기 어려운 질문이야.",
     "person_left_close.wav": "잠깐! 왼쪽에 친구가 가까이 있어! 오른쪽으로 비켜가볼까?",
     "person_center_close.wav": "잠깐 멈춰! 앞에 친구가 너무 가까워!",
     "person_right_close.wav": "잠깐! 오른쪽에 친구가 가까이 있어! 왼쪽으로 비켜가볼까?",
@@ -48,7 +53,7 @@ def find_response(question: str, scene_objects, voice_history: Iterable[str] | N
             if filename == "_scene_aware":
                 return find_scene_voice(scene_objects, history)
             return filename
-    return "fallback.wav"
+    return "difficult.wav"
 
 
 def find_scene_voice(detected_objects, voice_history: Iterable[str] | None = None) -> str:
@@ -72,7 +77,7 @@ def find_scene_voice(detected_objects, voice_history: Iterable[str] | None = Non
 
 def demo_display_text(filename: str) -> str:
     """대시보드 채팅에 표시할 자연어 문장. 음성 파일명은 노출하지 않는다."""
-    return DEMO_TEXT_MAP.get(filename, DEMO_TEXT_MAP["fallback.wav"])
+    return DEMO_TEXT_MAP.get(filename, DEMO_TEXT_MAP["difficult.wav"])
 
 
 def get_direction(obj: dict) -> str:

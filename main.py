@@ -10,10 +10,12 @@ import asyncio
 import os
 import threading
 import time
+import urllib.request
 from collections import deque
 
 import cv2
 import httpx
+import numpy as np
 import uvicorn
 
 from ai_core.vision import load_model, detect, enrich
@@ -186,9 +188,87 @@ _tts_lock = asyncio.Lock()
 voice_pipeline: VoicePipeline | None = None
 
 
-# 카메라 연결 타임아웃 (FFmpeg, ms) — 무선이 끊겨도 30초씩 멈추지 않도록 짧게.
-_CAM_OPEN_TIMEOUT_MS = 5000
-_CAM_READ_TIMEOUT_MS = 5000
+# 카메라 연결 타임아웃 (FFmpeg, ms) — 무선 지연/끊김 시 오래된 프레임을 붙잡지 않도록 짧게.
+_CAM_OPEN_TIMEOUT_MS = 3000
+# read 타임아웃은 '최댓값'이다 — 정상 프레임은 0.1초에 와서 즉시 반환된다.
+# 같은 ESP32가 초음파(포트80)도 서빙해 스트림(포트81)이 잠깐 버벅일 때(실측 ~1초),
+# 1000ms면 그 순간 read 실패 → 무한 재연결에 빠진다. 3000ms로 경합을 견딘다.
+_CAM_READ_TIMEOUT_MS = 3000
+
+if _IS_STREAM_SOURCE:
+    # ESP32-CAM MJPEG 스트림 지연 최소화. 사용자가 직접 값을 준 경우는 존중한다.
+    os.environ.setdefault(
+        "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+        "fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32|analyzeduration;0",
+    )
+
+
+class _MjpegHttpCapture:
+    """ESP32-CAM MJPEG를 OpenCV VideoCapture 대신 HTTP로 직접 읽는 캡처.
+
+    브라우저에서 /stream은 열리는데 OpenCV/FFmpeg가 "No route to host"나
+    "Couldn't read video stream"을 내는 macOS 조합을 우회한다.
+    """
+
+    def __init__(self, url: str, timeout_sec: float = 5.0):
+        self._url = url
+        self._timeout_sec = timeout_sec
+        self._response = None
+        self._buffer = bytearray()
+        self._opened = False
+        self._open()
+
+    def _open(self):
+        req = urllib.request.Request(
+            self._url,
+            headers={
+                "User-Agent": "SIA-CUPID/1.0",
+                "Accept": "multipart/x-mixed-replace,image/jpeg,*/*",
+                "Connection": "close",
+            },
+        )
+        self._response = urllib.request.urlopen(req, timeout=self._timeout_sec)
+        self._opened = True
+
+    def isOpened(self):
+        return self._opened
+
+    def set(self, *_args):
+        return False
+
+    def release(self):
+        self._opened = False
+        if self._response is not None:
+            try:
+                self._response.close()
+            except Exception:
+                pass
+        self._response = None
+        self._buffer.clear()
+
+    def read(self):
+        if not self._opened or self._response is None:
+            return False, None
+
+        deadline = time.monotonic() + self._timeout_sec
+        while time.monotonic() < deadline:
+            start = self._buffer.find(b"\xff\xd8")
+            end = self._buffer.find(b"\xff\xd9", start + 2) if start >= 0 else -1
+            if start >= 0 and end >= 0:
+                jpg = bytes(self._buffer[start:end + 2])
+                del self._buffer[:end + 2]
+                frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if frame is not None:
+                    return True, frame
+                continue
+
+            chunk = self._response.read(4096)
+            if not chunk:
+                break
+            self._buffer.extend(chunk)
+            if len(self._buffer) > 2_000_000:
+                del self._buffer[:-500_000]
+        return False, None
 
 
 # ---------------------------------------------------------------------------
@@ -197,33 +277,65 @@ _CAM_READ_TIMEOUT_MS = 5000
 def _open_camera_sync() -> cv2.VideoCapture | None:
     """웹캠 연결 시도(동기). 실패 시 재시도 후 None 반환.
 
-    - URL 소스(ESP32-CAM MJPEG): FFmpeg 백엔드 + 오픈/읽기 타임아웃 5초.
-      (무선이 죽었을 때 30초씩 매달리지 않고 빠르게 재시도)
+    - URL 소스(ESP32-CAM MJPEG): FFmpeg 백엔드를 먼저 쓰고, 실패하면 기본 백엔드로
+      한 번 더 시도한다. 일부 macOS/OpenCV 조합은 브라우저에서는 열리는 MJPEG도
+      CAP_FFMPEG로 못 여는 경우가 있어 시연 안정성을 위해 fallback을 둔다.
     - 로컬 웹캠(int 인덱스): 기본 백엔드.
     - 공통: 내부 버퍼 1프레임으로 최신 프레임만 유지.
     """
     for attempt in range(1, MAX_WEBCAM_RETRIES + 1):
         if _IS_STREAM_SOURCE:
-            cap = cv2.VideoCapture(
-                CAM_SOURCE,
-                cv2.CAP_FFMPEG,
-                [
-                    cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, _CAM_OPEN_TIMEOUT_MS,
-                    cv2.CAP_PROP_READ_TIMEOUT_MSEC, _CAM_READ_TIMEOUT_MS,
-                ],
-            )
+            candidates = [
+                ("HTTP-MJPEG", lambda: _MjpegHttpCapture(CAM_SOURCE, timeout_sec=5.0)),
+                (
+                    "FFmpeg",
+                    lambda: cv2.VideoCapture(
+                        CAM_SOURCE,
+                        cv2.CAP_FFMPEG,
+                        [
+                            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, _CAM_OPEN_TIMEOUT_MS,
+                            cv2.CAP_PROP_READ_TIMEOUT_MSEC, _CAM_READ_TIMEOUT_MS,
+                        ],
+                    ),
+                ),
+                ("기본", lambda: cv2.VideoCapture(CAM_SOURCE)),
+            ]
         else:
-            cap = cv2.VideoCapture(CAM_SOURCE)
-        if cap.isOpened():
+            candidates = [("기본", lambda: cv2.VideoCapture(CAM_SOURCE))]
+
+        for backend, opener in candidates:
             try:
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            except Exception:
-                pass
-            backend = "FFmpeg" if _IS_STREAM_SOURCE else "기본"
-            print(f"[MAIN] 웹캠 연결 성공 (시도 {attempt}, 소스={CAM_SOURCE}, 백엔드={backend})")
-            return cap
-        print(f"[MAIN] 웹캠 연결 실패 (시도 {attempt}/{MAX_WEBCAM_RETRIES})")
-        cap.release()
+                cap = opener()
+            except Exception as e:
+                print(
+                    f"[MAIN] 웹캠 연결 실패 (시도 {attempt}/{MAX_WEBCAM_RETRIES}, "
+                    f"백엔드={backend}, 오류={type(e).__name__}: {e})"
+                )
+                continue
+            if cap.isOpened():
+                try:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                except Exception:
+                    pass
+                print(
+                    f"[MAIN] 웹캠 연결 성공 (시도 {attempt}, 소스={CAM_SOURCE}, 백엔드={backend}, "
+                    f"open_timeout={_CAM_OPEN_TIMEOUT_MS}ms, read_timeout={_CAM_READ_TIMEOUT_MS}ms)"
+                )
+                if _IS_STREAM_SOURCE:
+                    print(
+                        "[MAIN] FFmpeg low-latency options="
+                        f"{os.environ.get('OPENCV_FFMPEG_CAPTURE_OPTIONS', '')}"
+                    )
+                return cap
+            cap.release()
+            print(f"[MAIN] 웹캠 연결 실패 (시도 {attempt}/{MAX_WEBCAM_RETRIES}, 백엔드={backend})")
+
+        if _IS_STREAM_SOURCE:
+            if attempt == 1:
+                print(
+                    "[MAIN] 힌트: ESP32-CAM /stream을 브라우저에서 직접 열어둔 탭이 있으면 "
+                    "닫고 다시 시도하세요. ESP32-CAM은 동시 스트림 연결에 약합니다."
+                )
         time.sleep(WEBCAM_RETRY_DELAY)
     return None
 
@@ -272,37 +384,55 @@ def _capture_worker(loop: asyncio.AbstractEventLoop, stop_event: threading.Event
     회전(CAMERA_ROTATION)은 set_frame() 직전 한 곳에서만 적용 → YOLO/bbox/거리추정
     모두 회전된 프레임 기준으로 일관 (다운스트림이 frame.shape에서 치수 재독).
     """
-    cap = _open_camera_sync()
+    def _connect_until_ready() -> cv2.VideoCapture | None:
+        """stop_event 전까지 무한 재시도로 카메라를 연다. 절대 영구 포기하지 않는다.
+        이유: kill -9 로 이전 서버를 강제 종료하면 ESP32 가 죽은 연결을 몇 초~몇십 초
+        붙잡고 있어(스트림 슬롯 1개) 바로 켠 새 서버가 못 붙는다. 여기서 포기하지 않고
+        계속 재시도하면, 슬롯이 풀리는 순간 자동으로 붙는다(사용자는 그냥 기다리면 됨)."""
+        n = 0
+        while not stop_event.is_set():
+            cap = _open_camera_sync()
+            if cap is not None:
+                if n > 0:
+                    print(f"[MAIN] ✅ 카메라 자동 복구됨 (재시도 {n}회 후 슬롯 확보)")
+                return cap
+            n += 1
+            print(
+                f"[MAIN] 카메라 연결 대기중(누적 {n}회) — ESP32가 이전 연결을 놓아줄 때까지 "
+                f"자동 재시도. (방금 kill -9 로 껐다면 ~10~20초 기다리면 자동 연결)"
+            )
+            _broadcast_threadsafe(loop, {
+                "type": "error",
+                "message": "카메라 연결 대기중... (잠시 후 자동 연결)",
+            })
+            stop_event.wait(2.0)
+        return None
+
+    cap = _connect_until_ready()
     if cap is None:
-        print("[MAIN] 웹캠 연결 불가. 캡처 스레드 종료.")
-        _broadcast_threadsafe(loop, {
-            "type": "error",
-            "message": "웹캠 연결 실패. 카메라 화면을 사용할 수 없습니다.",
-        })
-        return
+        return  # 연결 대기 중 서버 종료 → 정상 종료
 
     if _ROTATE_FLAG is not None:
         print(f"[MAIN] 카메라 회전 적용: {CAMERA_ROTATION}도")
 
     # 시간 기반 재연결: 마지막 정상 프레임 후 이 시간이 지나면 재연결.
-    # (read()가 타임아웃으로 느리게 실패해도 빠르게 복구 — 불안정한 무선 대비)
-    RECONNECT_AFTER_SEC = 3.0
+    # ⚠️ read 타임아웃(3초)보다 충분히 커야 한다. 안 그러면 경합으로 read가 한 번
+    #    느려질 때마다 재연결을 시도해 오히려 스트림을 끊어 회복을 막는다(무한 재연결).
+    RECONNECT_AFTER_SEC = 10.0
     last_ok = time.monotonic()
     try:
         while not stop_event.is_set():
             ret, frame = cap.read()  # 스트림: 다음 프레임까지만 블로킹 → 항상 최신
             if not ret:
                 if time.monotonic() - last_ok > RECONNECT_AFTER_SEC:
-                    print("[MAIN] 프레임 끊김 3초 경과 → 웹캠 재연결 시도...")
-                    cap.release()
-                    cap = _open_camera_sync()
+                    print("[MAIN] 프레임 끊김 → 웹캠 재연결 시도...")
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                    cap = _connect_until_ready()  # 영구 포기 안 함 → 자동 복구
                     if cap is None:
-                        print("[MAIN] 웹캠 재연결 실패. 캡처 스레드 종료.")
-                        _broadcast_threadsafe(loop, {
-                            "type": "error",
-                            "message": "웹캠 재연결 실패.",
-                        })
-                        return
+                        return  # 서버 종료
                     last_ok = time.monotonic()
                 else:
                     time.sleep(0.05)
@@ -631,25 +761,49 @@ async def startup():
     _voice_task.add_done_callback(_task_done_callback)
 
     # 골전도 이어폰 가운데 버튼 → 마이크 토글 (수동 모드 전용).
-    # 버튼은 HFP(이어폰 마이크 열림) 상태에서 "Received call hangup event"를 발생시키는데,
-    # 수동 모드는 마이크를 항상 열어두므로(start_manual_capture_stream) 계속 작동한다.
+    # macOS/블루투스 프로파일 상태에 따라 같은 버튼도 redial/AVRCP/Siri 계열로 다르게
+    # 기록될 수 있으므로 BluetoothButtonListener 쪽에서 실제 이벤트 후보를 넓게 감시한다.
+    print(f"[BT_BUTTON] startup manual_mode={MANUAL_RECORDING_MODE}")
     if MANUAL_RECORDING_MODE:
         loop = asyncio.get_running_loop()
+        print(
+            f"[BT_BUTTON] startup server_loop_id={id(loop)} "
+            f"running_loop_id={id(asyncio.get_running_loop())}"
+        )
 
         async def _bt_button_toggle():
+            print(
+                f"[BT_BUTTON] toggle coroutine entered "
+                f"running_loop_id={id(asyncio.get_running_loop())}"
+            )
             if voice_pipeline is None:
+                print("[BT_BUTTON] toggle ignored: voice_pipeline is None")
                 return
             state = voice_pipeline.recording_state
+            print(f"[BT_BUTTON] current recording_state={state}")
             if state == "idle":
-                print("[BT_BUTTON] toggle -> start_recording")
+                print("[BT_BUTTON] calling on_manual_start_recording()")
                 await voice_pipeline.on_manual_start_recording()
+                print("[BT_BUTTON] toggle -> start_recording")
             elif state == "recording":
-                print("[BT_BUTTON] toggle -> stop_recording")
+                print("[BT_BUTTON] calling on_manual_stop_recording()")
                 await voice_pipeline.on_manual_stop_recording()
+                print("[BT_BUTTON] toggle -> stop_recording")
             else:
-                print(f"[BT_BUTTON] toggle 무시 (state={state})")
+                # processing/speaking: 정상이면 곧 idle 로 풀린다. 그런데 2초 넘게
+                # 이 상태면 어딘가 막힌 것 → 운영자 버튼으로 즉시 강제복구(데드락 탈출).
+                secs = voice_pipeline.seconds_in_state
+                if secs > 2.0:
+                    print(f"[BT_BUTTON] state={state} {secs:.1f}s 지속 → 막힘으로 보고 강제복구")
+                    await voice_pipeline.force_recover_stuck(reason="operator_button")
+                else:
+                    print(f"[BT_BUTTON] toggle 무시 (state={state}, {secs:.1f}s — 정상 처리중)")
 
-        _bt_button_listener = BluetoothButtonListener(loop, _bt_button_toggle)
+        # debounce 1.5초: COSY + 버튼을 한 번 눌러도 살짝 길게 눌리면 볼륨업 신호가
+        # 여러 번(≈1초 간격) 가서 start→stop 이중 토글되는 실측 문제가 있었다.
+        # 의도적 start/stop은 발화(2~3초)를 사이에 두니 1.5초 디바운스가 방해 안 됨.
+        _bt_button_listener = BluetoothButtonListener(loop, _bt_button_toggle, debounce_sec=1.5)
+        print(f"[BT_BUTTON] created listener ref={_bt_button_listener!r}")
         _bt_button_listener.start()
     else:
         print("[BT_BUTTON] 비활성 (MANUAL_RECORDING_MODE=false)")

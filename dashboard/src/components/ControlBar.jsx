@@ -1,6 +1,7 @@
 const STAGE_LABELS = ["수용", "방향", "기술"];
 
-export default function ControlBar({ send, stage, onStageChange, onExit }) {
+export default function ControlBar({ send, stage, onStageChange, onExit, language = "ko" }) {
+  const isEn = language === "en";
   const outlineBtn = {
     border: "1px solid var(--pink-primary)",
     color: "var(--pink-primary)",
@@ -96,6 +97,23 @@ export default function ControlBar({ send, stage, onStageChange, onExit }) {
 
       {/* Right */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {/* 언어 토글: 한국어 ↔ 영어 (STT·LLM·TTS 동시 전환). 단축키 L */}
+        <button
+          style={{
+            border: "1px solid var(--pink-primary)",
+            background: isEn ? "var(--pink-primary)" : "#fff",
+            color: isEn ? "#fff" : "var(--pink-primary)",
+            borderRadius: 6,
+            padding: "6px 14px",
+            cursor: "pointer",
+            fontSize: 13,
+            fontWeight: "bold",
+          }}
+          onClick={() => send({ event: "set_language", language: isEn ? "ko" : "en" })}
+          title="한국어 ↔ 영어 전환 (단축키 L). STT·답변·음성이 함께 바뀝니다."
+        >
+          {isEn ? "🇺🇸 English" : "🇰🇷 한국어"}
+        </button>
         <button style={greyOutlineBtn}>서버 로그 펼치기</button>
         <button
           style={{

@@ -2,12 +2,18 @@ fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 websockets>=12.0
 ultralytics>=8.1.0
-opencv-python>=4.8.0
+# ⚠️ 4.11.0.86 고정. opencv-python 4.13.0.92 macOS Intel 휠은 FFMPEG=NO 로 빌드돼
+# HTTP MJPEG 스트림(ESP32-CAM)을 못 연다(isOpened=False 즉시 실패). 4.11은 FFMPEG=YES.
+# venv 재생성 시 최신(깨진 4.13)을 받지 않도록 정확히 핀한다.
+opencv-python==4.11.0.86
 python-dotenv>=1.0.0
 openai>=1.12.0
 groq
 pygame>=2.5.0
-numpy>=1.24.0
+# ⚠️ numpy<2 고정. 설치된 torch(YOLO용)가 numpy 1.x로 컴파일돼 있어, numpy 2.x면
+# "module compiled using NumPy 1.x cannot be run in NumPy 2.x"로 YOLO 추론이 크래시한다.
+# (venv 재생성 시 numpy 2.x를 받아 욜로 박스가 안 뜨는 문제 → 1.x로 고정해 예방)
+numpy>=1.24.0,<2
 SpeechRecognition>=3.10
 faster-whisper>=1.0.0
 sounddevice>=0.4

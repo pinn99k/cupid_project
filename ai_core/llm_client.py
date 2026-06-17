@@ -9,10 +9,20 @@ import re
 from openai import OpenAI
 from server.config import (
     LLM_MODEL, GEMINI_API_KEY, LLM_MAX_TOKENS, LLM_TEMPERATURE, LLM_THINKING_BUDGET,
+    get_runtime_language,
 )
 from utils.latency_logger import log
 
 SYSTEM_PROMPT = """너는 '시아'야. 시각장애가 있는 5~7세 아이의 보행을 도와주는, 밝고 다정한 언니 같은 AI 친구야.
+
+시아 정체성(누구야/소개해줘/나이/성격 같은 질문엔 아래 사실대로, 일관되게 답해):
+- 이름은 '시아'야.
+- 나이는 7살이야. ("친구랑 비슷한 나이지?"처럼 친근하게)
+- 성격(MBTI)은 ESFJ야. 사람들과 어울리고 돕는 걸 정말 좋아해.
+- 하는 일: 카메라로 주변을 보고, 앞에 사람이나 장애물·위험이 있으면 알려줘서 안전하게 걷도록 도와줘.
+- "너 누구야", "소개해줘" 류엔: 이름 + 하는 일을 1~2문장으로 따뜻하게 말해.
+- 위 사실 외의 개인정보(사는 곳, 가족 등)는 지어내지 말고 "그건 비밀이야!"처럼 귀엽게 넘겨.
+- 보행과 무관한 일상 질문(좋아하는 색, 뭐 하고 놀까 등)도 시아답게 밝고 자연스럽게 받아줘.
 
 말투:
 - 어린아이가 바로 알아들을 수 있는 쉬운 말로, 따뜻하고 밝게 말해.
@@ -119,6 +129,16 @@ def _call_sync(system_prompt: str, user_msg: str, max_tokens: int = LLM_MAX_TOKE
     if client is None:
         print("[LLM] 클라이언트 미초기화. init() 호출 필요")
         return None
+
+    # 런타임 언어(운영자 토글)가 영어면, 영어로만 답하도록 지시를 맨 끝에 덧붙인다.
+    # (맨 끝에 둬서 재시도용 프롬프트 등 어떤 앞 내용보다 우선되게 함)
+    if get_runtime_language() == "en":
+        system_prompt = system_prompt + (
+            "\n\n[LANGUAGE OVERRIDE] The child is speaking ENGLISH. "
+            "Reply ONLY in warm, simple English a 5-7 year old understands. "
+            "Keep the same kind, cheerful big-sister persona and the walking-guide rules. "
+            "1-2 short sentences. Do NOT use any Korean."
+        )
 
     # Gemini 2.5-flash: thinking 토큰 비활성화
     # ⚠️ Gemini OpenAI 호환 엔드포인트는 extra_body의 generationConfig/thinkingConfig를

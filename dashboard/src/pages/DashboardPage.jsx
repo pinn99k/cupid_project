@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import Header from '../components/Header.jsx'
 import StageStepper from '../components/StageStepper.jsx'
 import CameraView from '../components/CameraView.jsx'
@@ -11,14 +11,30 @@ import MicToggleButton from '../components/MicToggleButton.jsx'
 
 function DashboardPage({ send, connected, stage, setStage, useWs, onExit }) {
   // useWebSocket에서 분류된 정보 추출
-  const { messages, voiceState, manualRecordingState, latestDanger, latestObjects, serverState } = useWs || {
+  const { messages, voiceState, manualRecordingState, language, latestDanger, latestObjects, serverState } = useWs || {
     messages: [],
     voiceState: 'idle',
     manualRecordingState: 'idle',
+    language: 'ko',
     latestDanger: null,
     latestObjects: [],
     serverState: {},
   };
+  const lang = language || 'ko';
+
+  // 단축키 L: 한국어 ↔ 영어 토글 (입력창 포커스 중이면 무시)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'l' && e.key !== 'L') return;
+      const t = e.target;
+      const tag = t && t.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      send({ event: 'set_language', language: lang === 'ko' ? 'en' : 'ko' });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [send, lang]);
 
   // 세션 ID 추출 (메시지가 아닌 다른 곳에서)
   const sessionId = useMemo(() => {
@@ -78,7 +94,7 @@ function DashboardPage({ send, connected, stage, setStage, useWs, onExit }) {
         </div>
       </div>
 
-      <ControlBar send={send} stage={stage} onStageChange={handleStageChange} onExit={onExit} />
+      <ControlBar send={send} stage={stage} onStageChange={handleStageChange} onExit={onExit} language={lang} />
     </div>
   )
 }

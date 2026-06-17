@@ -169,11 +169,13 @@ app.add_middleware(
 
 def get_state() -> dict:
     """현재 서버 상태를 dict로 반환 (WebSocket 초기 상태 전송용)."""
+    from server.config import get_runtime_language
     return {
         "stage": app_state.current_stage,
         "learning_active": app_state.learning_active,
         "session_id": app_state.session_id,
         "question_count": app_state.question_count,
+        "language": get_runtime_language(),
         "recording_state": (
             getattr(_voice_pipeline, "recording_state", "idle")
             if _voice_pipeline else "idle"
@@ -339,6 +341,16 @@ async def handle_dashboard_message(msg: dict):
                 "event": "clear_tts_cache",
             })
 
+        elif event == "set_language":
+            from server.config import set_runtime_language
+            lang = set_runtime_language(msg.get("language", "ko"))
+            print(f"[SERVER] 언어 전환 → {lang} (STT/LLM/TTS 동시 적용)")
+            await broadcast({
+                "type": "language",
+                "language": lang,
+                "timestamp": int(time.time() * 1000),
+            })
+
         elif event == "fallback":
             try:
                 from ai_core.audio_manager import PRIORITY_DANGER, PRIORITY_FALLBACK, get_audio_manager
@@ -393,6 +405,23 @@ async def toggle_recording():
     new_state = getattr(_voice_pipeline, "recording_state", "idle")
     print(f"[HTTP] toggle_recording: {state} → {action}(ok={ok}) → {new_state}")
     return {"ok": ok, "action": action, "prev": state, "state": new_state}
+
+
+@app.post("/api/toggle_language")
+@app.get("/api/toggle_language")
+async def toggle_language():
+    """한국어 ↔ 영어 토글 (운영자용). STT 인식언어·LLM 응답언어·TTS 보이스가 함께 바뀐다.
+    외부 트리거(단축키/버튼)에서도 쓸 수 있게 GET/POST 둘 다 허용."""
+    from server.config import get_runtime_language, set_runtime_language
+    cur = get_runtime_language()
+    new = set_runtime_language("en" if cur == "ko" else "ko")
+    await broadcast({
+        "type": "language",
+        "language": new,
+        "timestamp": int(time.time() * 1000),
+    })
+    print(f"[HTTP] toggle_language: {cur} → {new}")
+    return {"ok": True, "prev": cur, "language": new}
 
 
 @app.get("/preflight")

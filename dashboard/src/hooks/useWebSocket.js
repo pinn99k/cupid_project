@@ -8,6 +8,7 @@ export function useWebSocket(url) {
   const [messages, setMessages] = useState([]);
   const [voiceState, setVoiceState] = useState("idle");
   const [manualRecordingState, setManualRecordingState] = useState("idle");
+  const [language, setLanguage] = useState("ko");
   const [latestDanger, setLatestDanger] = useState(null);
   const [latestObjects, setLatestObjects] = useState([]);
   const [serverState, setServerState] = useState({});
@@ -55,7 +56,9 @@ export function useWebSocket(url) {
         if (type === "init_state" || type === "ack") {
           setServerState((prev) => ({ ...prev, ...data }));
           if (data.recording_state) setManualRecordingState(data.recording_state);
+          if (data.language) setLanguage(data.language);
         }
+        if (type === "language") setLanguage(data.language || "ko");
         if (type === "ack" && ["new_session", "stop_learning"].includes(data.event)) {
           setMessages([]);
           setLatestDanger(null);
@@ -104,6 +107,7 @@ export function useWebSocket(url) {
     messages,
     voiceState,
     manualRecordingState,
+    language,
     latestDanger,
     latestObjects,
     serverState,

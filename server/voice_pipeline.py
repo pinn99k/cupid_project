@@ -346,7 +346,10 @@ class VoicePipeline:
         })
 
         # DEMO_MODE는 수용단계(stage 1)에서만 적용. 방향(2)+는 실제 LLM/VQA.
-        _demo_active = DEMO_MODE and self._current_stage < 2
+        # ⚠️ 영어 모드에서는 데모 키워드 경로를 건너뛴다(사전녹음 wav가 한국어뿐이라
+        #    영어 질문에 한국어 음성이 나가는 걸 방지). 영어는 항상 LLM이 영어로 답한다.
+        from server.config import get_runtime_language
+        _demo_active = DEMO_MODE and self._current_stage < 2 and get_runtime_language() == "ko"
 
         # 파이프라인 상태 플래그 — 응답 직전 한눈에 진단
         _am_playing = bool(self._audio_manager and self._audio_manager.is_playing())

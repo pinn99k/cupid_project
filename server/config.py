@@ -164,6 +164,26 @@ VAD_AMBIENT_FACTOR: float = float(os.getenv("VAD_AMBIENT_FACTOR", "2.0"))
 
 # STT 설정
 STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "ko-KR")
+
+# ── 런타임 언어(운영자 수동 토글: "ko"/"en") ─────────────────────────────
+# STT 인식 언어, LLM 응답 언어, TTS 보이스가 이 값을 함께 따라간다.
+# 기본 한국어. 영어 손님 응대 시 대시보드 버튼/단축키(L)로 전환.
+# (전역 + getter/setter — 다른 모듈은 함수로 읽어 토글이 즉시 반영되게 한다.)
+_RUNTIME_LANGUAGE: str = "ko"
+STT_LANG_CODES: dict = {"ko": "ko-KR", "en": "en-US"}      # Google STT 언어코드
+EDGE_TTS_VOICES: dict = {"ko": "ko-KR-SunHiNeural", "en": "en-US-AriaNeural"}
+
+
+def get_runtime_language() -> str:
+    """현재 런타임 언어('ko' 또는 'en')."""
+    return _RUNTIME_LANGUAGE
+
+
+def set_runtime_language(lang: str) -> str:
+    """런타임 언어 설정. 'en'으로 시작하면 영어, 그 외 한국어. 적용된 값 반환."""
+    global _RUNTIME_LANGUAGE
+    _RUNTIME_LANGUAGE = "en" if str(lang).lower().startswith("en") else "ko"
+    return _RUNTIME_LANGUAGE
 # STT 엔진: "google"(무료·네트워크) | "whisper"(로컬 faster-whisper·오프라인).
 # whisper 선택 시 미설치/로드 실패면 자동으로 google 폴백(데모 안전).
 STT_ENGINE: str = os.getenv("STT_ENGINE", "whisper").lower()

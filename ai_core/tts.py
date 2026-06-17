@@ -51,11 +51,20 @@ _genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 # ── Edge-TTS 헬퍼 ──────────────────────────────────────────────────────────
+def _edge_voice() -> str:
+    """런타임 언어에 맞는 Edge-TTS 보이스. ko→한국어, en→영어 여성(Aria)."""
+    try:
+        from server.config import get_runtime_language, EDGE_TTS_VOICES
+        return EDGE_TTS_VOICES.get(get_runtime_language(), EDGE_TTS_VOICE)
+    except Exception:
+        return EDGE_TTS_VOICE
+
+
 async def _edge_tts_async(text: str, filepath: Path) -> bool:
     """Edge-TTS로 mp3 생성. 성공 시 True."""
     try:
         import edge_tts  # noqa: PLC0415
-        communicate = edge_tts.Communicate(text, voice=EDGE_TTS_VOICE)
+        communicate = edge_tts.Communicate(text, voice=_edge_voice())
         await communicate.save(str(filepath))
         return filepath.exists() and filepath.stat().st_size > 0
     except Exception as e:

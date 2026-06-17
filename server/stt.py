@@ -7,12 +7,72 @@
 import asyncio
 import io
 import logging
+import os
 import wave
 
 import numpy as np
 import speech_recognition as sr
+from scipy import signal as _sps
+
+# STT 전처리 옵션 (노이즈 환경 최적화). 문제가 생기면 env로 끌 수 있다.
+# ⚠️ 스펙트럼 노이즈제거(noisereduce)는 이 환경에서 torch/numpy 충돌 + 신호 왜곡이라
+#    쓰지 않는다. '안전한' 처리만: 고역통과(럼블 제거) + 완만한 저음량 증폭.
+_STT_HPF_HZ = float(os.getenv("STT_HPF_HZ", "90"))     # 고역통과 차단주파수(0=끔)
+_STT_MAX_GAIN = float(os.getenv("STT_MAX_GAIN", "4"))  # 저음량 최대 증폭배수(과증폭=노이즈↑ 방지)
 
 logger = logging.getLogger(__name__)
+
+
+def _preprocess_for_stt(
+    wav_bytes: bytes, target_peak: float = 0.8
+) -> tuple[bytes, float, float, float, str]:
+    """STT 인식률을 위한 '안전한' 전처리.
+
+    순서: (1) 고역통과로 럼블/HVAC/핸들링 저주파 노이즈 제거(발화 대역은 보존) →
+          (2) 저음량 자동 증폭(노트북 마이크가 작게 잡을 때만, 과증폭은 노이즈도
+              키우므로 _STT_MAX_GAIN로 제한).
+    스펙트럼 노이즈제거는 왜곡 위험이 커서 쓰지 않는다. 실패 시 원본으로 폴백.
+    반환: (처리된 wav_bytes, rms[0~1], peak[0~1], gain, 적용단계 문자열).
+    """
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+            nch, sw, fr = wf.getnchannels(), wf.getsampwidth(), wf.getframerate()
+            raw = wf.readframes(wf.getnframes())
+        if sw != 2:  # int16만 처리
+            return wav_bytes, 0.0, 0.0, 1.0, "skip(non-int16)"
+        a = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        if nch > 1:
+            a = a.reshape(-1, nch).mean(axis=1)
+        if a.size == 0:
+            return wav_bytes, 0.0, 0.0, 1.0, "skip(empty)"
+
+        peak0 = float(np.max(np.abs(a)))
+        rms = float(np.sqrt(np.mean(a * a)))
+        steps: list[str] = []
+
+        # (1) 고역통과 — 럼블/저주파 노이즈 제거 (90Hz↓만 깎아 발화는 보존)
+        if _STT_HPF_HZ > 0 and fr > 2 * _STT_HPF_HZ:
+            sos = _sps.butter(2, _STT_HPF_HZ / (fr / 2), btype="highpass", output="sos")
+            a = _sps.sosfilt(sos, a).astype(np.float32)
+            steps.append(f"hpf{int(_STT_HPF_HZ)}")
+
+        # (2) 저음량 증폭 — 피크가 낮을 때만, 최대 _STT_MAX_GAIN배(클리핑 없이)
+        peak = float(np.max(np.abs(a)))
+        gain = 1.0
+        if 0.0 < peak < target_peak:
+            gain = min(_STT_MAX_GAIN, target_peak / peak)
+            a = np.clip(a * gain, -1.0, 1.0)
+            steps.append(f"gain{gain:.1f}x")
+
+        out = io.BytesIO()
+        with wave.open(out, "wb") as wo:
+            wo.setnchannels(1)
+            wo.setsampwidth(2)
+            wo.setframerate(fr)
+            wo.writeframes((a * 32767.0).astype(np.int16).tobytes())
+        return out.getvalue(), rms, peak0, gain, "+".join(steps) or "none"
+    except Exception as e:
+        return wav_bytes, 0.0, 0.0, 1.0, f"error({type(e).__name__})"
 
 
 def _wav_to_float32(wav_bytes: bytes) -> np.ndarray:
@@ -71,24 +131,35 @@ class STTClient:
         RequestError: API 통신 오류 → None 반환 + 로그 기록
         """
         try:
-            buf = io.BytesIO(wav_bytes)
+            # 노이즈 환경 최적화 전처리(고역통과+노이즈감소+저음량증폭) + 음량 통계.
+            norm_bytes, rms, peak, gain, steps = _preprocess_for_stt(wav_bytes)
+
+            buf = io.BytesIO(norm_bytes)
             with sr.AudioFile(buf) as source:
-                # STT INPUT 진단: 전달되는 오디오 길이 확인
-                # (MicCapture 에서 잘린 경우 여기서 짧게 찍힘)
                 audio = self._recognizer.record(source)
 
             # WAV 헤더(44byte) 제외한 오디오 데이터 크기로 실제 길이 계산
             # int16(2byte), 16kHz, mono
             audio_bytes = len(wav_bytes) - 44
             audio_sec = max(0.0, audio_bytes / (16000 * 2))
+
+            # 런타임 언어(운영자 토글)에 맞춰 인식 언어 선택. ko→ko-KR, en→en-US.
+            from server.config import get_runtime_language, STT_LANG_CODES
+            lang_code = STT_LANG_CODES.get(get_runtime_language(), self._language)
+
+            # 진단 로그: 어떤 언어로 인식하는지 + 음량(rms/peak) + 적용 게인.
+            # peak가 0.02 미만이면 사실상 무음 → 마이크가 발화를 못 잡은 것(거리/장치 문제).
+            _quiet = " ⚠️거의무음(마이크 확인)" if peak < 0.02 else ""
             print(
                 f"[STT INPUT]"
                 f" duration={audio_sec:.2f}s"
                 f" bytes={len(wav_bytes)}"
-                f" audio_bytes={audio_bytes}"
+                f" lang={lang_code}"
+                f" rms={rms:.3f} peak={peak:.3f} gain={gain:.1f}x"
+                f" proc=[{steps}]{_quiet}"
             )
 
-            text = self._recognizer.recognize_google(audio, language=self._language)
+            text = self._recognizer.recognize_google(audio, language=lang_code)
             if text and text.strip():
                 self.last_status = "ok"
                 return text.strip()

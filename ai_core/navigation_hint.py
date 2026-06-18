@@ -40,10 +40,13 @@ def get_navigation_hint(objects) -> dict[str, str]:
         obstacle_summary = "앞에 특별한 장애물은 보이지 않음"
         direction_hint = "정면으로 천천히 걸어가보자."
 
-    answer_text = _answer_text(obstacle_summary, direction_hint, bool(normalized))
+    answer_text = _answer_text(obstacle_summary, bool(normalized))
     blocked_text = _blocked_text(blocked_dirs)
     open_text = _open_text(blocked_dirs)
 
+    # 방향정위 단계: 위치만 알려주고 이동 방향("~로 가자")은 말하지 않는다.
+    # direction_hint/막힌·열린 방향은 dict에는 남기되(호환), LLM 프롬프트에는 넣지 않아
+    # 모델이 이동 안내를 덧붙이지 않게 한다.
     return {
         "obstacle_summary": obstacle_summary,
         "direction_hint": direction_hint,
@@ -52,9 +55,6 @@ def get_navigation_hint(objects) -> dict[str, str]:
         "open_directions": open_text,
         "prompt_text": (
             f"방향별 감지: {obstacle_summary}\n"
-            f"막힌 방향: {blocked_text}\n"
-            f"열린 방향: {open_text}\n"
-            f"권장 이동: {direction_hint}\n"
             f"정답 초안: {answer_text}"
         ),
     }
@@ -112,10 +112,21 @@ def _direction_hint(blocked_dirs: set[str]) -> str:
     return "정면으로 천천히 걸어가보자."
 
 
-def _answer_text(obstacle_summary: str, direction_hint: str, has_objects: bool) -> str:
+def _subject_josa(word: str) -> str:
+    """끝 글자 받침 유무로 주격조사 선택(받침 O→'이', X→'가'). 한글 아니면 '이'."""
+    if not word:
+        return "이"
+    last = word[-1]
+    if "가" <= last <= "힣":
+        return "이" if (ord(last) - 0xAC00) % 28 else "가"
+    return "이"
+
+
+def _answer_text(obstacle_summary: str, has_objects: bool) -> str:
+    # 위치만 안내(이동 방향 제외). 예: "왼쪽에 사람, 오른쪽에 사람이 있어."
     if not has_objects:
-        return "앞에 특별한 장애물은 보이지 않아. 정면으로 천천히 걸어가보자."
-    return f"{obstacle_summary} 있어. {direction_hint}"
+        return "앞에 특별한 장애물은 보이지 않아."
+    return f"{obstacle_summary}{_subject_josa(obstacle_summary)} 있어."
 
 
 def _blocked_text(blocked_dirs: set[str]) -> str:

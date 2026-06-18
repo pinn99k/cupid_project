@@ -43,7 +43,7 @@ from server.main_server import (
 from server.websocket_handler import broadcast
 from server.config import (SERVER_HOST, SERVER_PORT, WEBCAM_INDEX, CAM_SOURCE,
                            CAMERA_ROTATION,
-                           MIC_DEVICE_INDEX, VAD_SILENCE_THRESHOLD,
+                           MIC_DEVICE_INDEX, MIC_DEVICE_NAME, VAD_SILENCE_THRESHOLD,
                            VAD_SILENCE_DURATION, VAD_MAX_DURATION, STT_LANGUAGE,
                            STT_ENGINE, WHISPER_MODEL, WHISPER_DEVICE,
                            WHISPER_COMPUTE_TYPE, WHISPER_BEAM_SIZE, WHISPER_VAD_FILTER,
@@ -733,6 +733,7 @@ async def startup():
     # VoicePipeline 초기화
     mic = MicCapture(
         device_index=MIC_DEVICE_INDEX,
+        device_name=MIC_DEVICE_NAME,  # 이름 우선(골전도 'COSY') → BT 재연결에도 고정
         silence_threshold=VAD_SILENCE_THRESHOLD,
         silence_duration=VAD_SILENCE_DURATION,
         max_duration=VAD_MAX_DURATION,

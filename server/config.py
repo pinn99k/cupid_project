@@ -46,6 +46,16 @@ LLM_THINKING_BUDGET: int = int(os.getenv("LLM_THINKING_BUDGET", "0"))
 # 0.4 → 0.7: 더 자연스럽고 따뜻한 말투를 위해 온도 상향.
 LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 
+# LLM 타임아웃 — 시연장 네트워크가 느려도 턴이 막혀 watchdog(12s)에 통째로 취소→
+# 침묵 되는 걸 막는다. (실측: OpenAI SDK 기본 timeout=600초라 한 번 stall하면 길게 매달림)
+# - LLM_TIMEOUT      : SDK 단일 호출 타임아웃(초). 초과 시 SDK가 예외 → 즉시 실패.
+# - LLM_MAX_RETRIES  : SDK 내부 자동 재시도 횟수(0=재시도 없음 → 지연 예측 가능).
+# - LLM_HARD_TIMEOUT : 파이프라인이 LLM 단계에 쓰는 절대 상한(초). watchdog보다 작아야
+#                      하며, 초과 시 스레드가 계속 돌더라도 파이프라인은 즉시 되묻기로 빠진다.
+LLM_TIMEOUT: float = float(os.getenv("LLM_TIMEOUT", "6.0"))
+LLM_MAX_RETRIES: int = int(os.getenv("LLM_MAX_RETRIES", "0"))
+LLM_HARD_TIMEOUT: float = float(os.getenv("LLM_HARD_TIMEOUT", "8.0"))
+
 # API 키 (사용하는 공급자 키만 있으면 됨)
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
@@ -141,6 +151,12 @@ ULTRASONIC_BUFFER_N: int = int(os.getenv("ULTRASONIC_BUFFER_N", "5"))
 MIC_DEVICE_INDEX = os.getenv("MIC_DEVICE_INDEX")
 if MIC_DEVICE_INDEX is not None:
     MIC_DEVICE_INDEX = int(MIC_DEVICE_INDEX)
+
+# 마이크를 '이름'으로 지정(권장). 블루투스(골전도 이어폰)는 재연결 시 장치 인덱스가
+# 바뀌어 인덱스 고정이 깨질 수 있으므로, 이름 부분일치(대소문자 무시)로 찾는다.
+#   예) MIC_DEVICE_NAME=COSY  → 시연장에서 인덱스가 바뀌어도 항상 골전도 마이크 선택.
+# 우선순위: MIC_DEVICE_NAME > MIC_DEVICE_INDEX > 시스템 기본.
+MIC_DEVICE_NAME = os.getenv("MIC_DEVICE_NAME") or None
 
 # VAD 설정
 VAD_SILENCE_THRESHOLD: int = int(os.getenv("VAD_SILENCE_THRESHOLD", "100"))

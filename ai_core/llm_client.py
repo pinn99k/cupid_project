@@ -9,6 +9,7 @@ import re
 from openai import OpenAI
 from server.config import (
     LLM_MODEL, GEMINI_API_KEY, LLM_MAX_TOKENS, LLM_TEMPERATURE, LLM_THINKING_BUDGET,
+    LLM_TIMEOUT, LLM_MAX_RETRIES,
     get_runtime_language,
 )
 from utils.latency_logger import log
@@ -118,8 +119,13 @@ def init():
         client = OpenAI(
             api_key=GEMINI_API_KEY,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            timeout=LLM_TIMEOUT,        # SDK 기본 600초 → 짧게(시연장 네트워크 stall 방지)
+            max_retries=LLM_MAX_RETRIES,  # SDK 내부 재시도 억제(지연 예측 가능)
         )
-        print(f"[LLM] 초기화 완료: provider=gemini, model={LLM_MODEL}")
+        print(
+            f"[LLM] 초기화 완료: provider=gemini, model={LLM_MODEL}"
+            f" (timeout={LLM_TIMEOUT}s, max_retries={LLM_MAX_RETRIES})"
+        )
     else:
         print("[LLM] 경고: GEMINI_API_KEY 미설정")
 

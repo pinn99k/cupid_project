@@ -10,7 +10,7 @@ from ai_core.audio_manager import PRIORITY_CONVERSATION, PRIORITY_FALLBACK
 from server.mic import MicCapture
 from server.stt import STTClient
 from server.websocket_handler import broadcast
-from server.config import DEMO_MODE, MANUAL_RECORDING_MODE
+from server.config import DEMO_MODE, MANUAL_RECORDING_MODE, LLM_HARD_TIMEOUT
 from utils.latency_logger import record as _rec
 
 # Vision 질문 분류기: 객체 인식 결과가 필요한 질문 패턴
@@ -446,11 +446,23 @@ class VoicePipeline:
                 context = self._build_context(base_prompt)
                 try:
                     _llm_start = time.perf_counter()
-                    response = await call_async(context, text)
+                    # 파이프라인 하드 타임아웃(< watchdog). call_async는 to_thread라
+                    # 취소해도 스레드는 계속 돌지만, 여기서 즉시 빠져나와 되묻기로 복구한다.
+                    response = await asyncio.wait_for(
+                        call_async(context, text), timeout=LLM_HARD_TIMEOUT
+                    )
                     _llm_elapsed = time.perf_counter() - _llm_start
                     _rec("llm_ms", _llm_elapsed * 1000)
                     print(f"[TIMING] LLM={_llm_elapsed:.2f}s")
                     print(f"[VoicePipeline] LLM 응답: {response}")
+                except asyncio.TimeoutError:
+                    print(
+                        f"[VoicePipeline] ⚠️ LLM {LLM_HARD_TIMEOUT}s 초과 → 음성 되묻기로 복구"
+                        f" (watchdog 취소·침묵 방지)"
+                    )
+                    await self._play_reprompt("retry_unclear.wav", "LLM 타임아웃")
+                    await self._cooldown_on_fail()
+                    return
                 except Exception as e:
                     print(f"[VoicePipeline] LLM 에러: {e}")
                     await self._play_fallback(f"LLM 에러: {type(e).__name__}")
@@ -460,8 +472,9 @@ class VoicePipeline:
                 if not response or not response.strip():
                     # 공백뿐인 응답도 차단 — 통과시키면 split_sentences가 빈 리스트를
                     # 반환해 아래 sentences[0]에서 IndexError로 턴이 통째로 사라진다.
-                    print("[VoicePipeline] LLM 응답 없음")
-                    await self._play_fallback("LLM 응답 없음")
+                    # 응답 None = SDK 타임아웃/네트워크 실패가 흔함 → 침묵 대신 음성 되묻기.
+                    print("[VoicePipeline] LLM 응답 없음 → 음성 되묻기")
+                    await self._play_reprompt("retry_unclear.wav", "LLM 응답 없음")
                     await self._cooldown_on_fail()
                     return
 

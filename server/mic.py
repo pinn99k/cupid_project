@@ -19,6 +19,14 @@ import sounddevice as sd
 # 않도록 동적 임계의 절대 상한을 둔다(기존 _record_sync 의 800 상한과 동일).
 _ADAPTIVE_THRESHOLD_CAP = 800
 
+# 블루투스(골전도 이어폰) 마이크는 stream 오픈 직후 HFP 링크가 붙기까지 ~1초간
+# 디지털 무음(RMS≈0)을 흘린다. 이 구간을 배경소음으로 측정하거나 청취 예산으로
+# 까먹지 않도록, stream 오픈 직후 '오디오가 실제로 흐를 때까지' 무음 프레임을 버린다.
+# - 이미 웜업된(유선/내장) 마이크는 첫 프레임부터 신호가 있어 즉시 통과(지연 0).
+# - 시끄러운 시연장은 ambient 가 floor 를 바로 넘으므로 추가 지연이 거의 없다.
+_BT_WARMUP_MAX_SEC = 1.5      # 최대 대기(초) — 이 안에 신호 없으면 그냥 진행
+_WARMUP_SILENCE_FLOOR = 5.0   # 이 RMS 이하는 '아직 무음(링크 미연결)'으로 간주
+
 
 def compute_silence_threshold(
     ambient_rms: float,
@@ -55,6 +63,7 @@ class MicCapture:
     def __init__(
         self,
         device_index=None,
+        device_name: str | None = None,
         sample_rate: int = 16000,
         silence_threshold: int = 100,
         silence_duration: float = 1.5,
@@ -67,6 +76,9 @@ class MicCapture:
         """
         Args:
             device_index: 마이크 장치 인덱스 (None=시스템 기본)
+            device_name: 마이크 이름 부분일치(대소문자 무시). 지정 시 매 stream 오픈마다
+                이름으로 인덱스를 재탐색 → 블루투스 재연결로 인덱스가 바뀌어도 항상
+                같은 마이크(예: 골전도 'COSY')를 선택. 못 찾으면 device_index로 폴백.
             sample_rate: 샘플링 레이트 (16kHz — STT 최적)
             silence_threshold: 무음 판정 RMS 임계값
             silence_duration: 발화 종료 판정 무음 시간 (초)
@@ -78,6 +90,8 @@ class MicCapture:
             ambient_factor: 동적 임계 계수. None=config.VAD_AMBIENT_FACTOR 사용.
         """
         self.device_index = device_index
+        self.device_name = device_name
+        self._last_resolved_index = None  # 변경 시에만 로그 출력용
         self.sample_rate = sample_rate
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
@@ -160,12 +174,13 @@ class MicCapture:
         chunk_size = 1024
         try:
             with sd.InputStream(
-                device=self.device_index,
+                device=self._resolve_device(),
                 samplerate=self.sample_rate,
                 channels=1,
                 dtype="int16",
                 blocksize=chunk_size,
             ) as stream:
+                self._warmup_stream(stream, chunk_size)  # BT 콜드스타트 무음 버림
                 while self._manual_stream_running:
                     try:
                         chunk, _ = stream.read(chunk_size)
@@ -287,13 +302,17 @@ class MicCapture:
 
         try:
             with sd.InputStream(
-                device=self.device_index,
+                device=self._resolve_device(),
                 samplerate=self.sample_rate,
                 channels=1,
                 dtype="int16",
                 blocksize=chunk_size,
             ) as stream:
                 total_frames = 0
+
+                # BT(골전도) 콜드스타트 보정: 신호가 흐를 때까지 무음 프레임을 버려
+                # 배경소음을 0으로 잘못 측정하거나 발화 앞부분을 놓치지 않게 한다.
+                self._warmup_stream(stream, chunk_size)
 
                 # ── 배경 소음 측정 (첫 0.3초) ─────────────────────────────
                 bg_measure_frames = min(
@@ -533,16 +552,73 @@ class MicCapture:
     # 유틸리티
     # ------------------------------------------------------------------
 
+    def _resolve_device(self):
+        """사용할 입력 장치 인덱스를 결정.
+        우선순위: device_name(이름 부분일치) → device_index → None(시스템 기본).
+        매 stream 오픈마다 호출 → BT 재연결로 인덱스가 바뀌어도 이름으로 재탐색.
+        인덱스가 바뀐 경우에만 로그를 남긴다.
+        """
+        idx = self.device_index
+        if self.device_name:
+            try:
+                target = self.device_name.lower()
+                found = next(
+                    (i for i, d in enumerate(sd.query_devices())
+                     if d["max_input_channels"] > 0 and target in d["name"].lower()),
+                    None,
+                )
+                if found is not None:
+                    idx = found
+                else:
+                    print(f"[MicCapture] ⚠️ 마이크 '{self.device_name}' 못 찾음 "
+                          f"→ index={self.device_index}/기본으로 폴백")
+            except Exception as e:
+                print(f"[MicCapture] 장치 이름 조회 실패({e}) → index 폴백")
+        if idx != self._last_resolved_index:
+            try:
+                name = sd.query_devices(idx)["name"] if idx is not None \
+                    else sd.query_devices(kind="input")["name"]
+            except Exception:
+                name = "unknown"
+            print(f"[MicCapture] 입력 장치 → [{idx}] {name}")
+            self._last_resolved_index = idx
+        return idx
+
+    def _warmup_stream(self, stream, chunk_size: int) -> int:
+        """BT HFP 콜드스타트 보정: 신호가 흐를 때까지 무음 프레임을 버린다.
+        반환: 버린 프레임 수(0이면 이미 웜업 상태/대상 아님).
+
+        이름으로 마이크를 고정(device_name)했을 때만 동작한다 — 이 경로가 곧
+        블루투스(골전도) 고정 시나리오다. 기본/인덱스 경로는 기존 동작 유지.
+        """
+        if not self.device_name:
+            return 0
+        max_frames = int(_BT_WARMUP_MAX_SEC * self.sample_rate / chunk_size)
+        dropped = 0
+        for _ in range(max_frames):
+            try:
+                chunk, _ = stream.read(chunk_size)
+            except Exception:
+                break
+            if self._calc_rms(chunk.flatten()) > _WARMUP_SILENCE_FLOOR:
+                break  # 오디오가 흐르기 시작 → 웜업 완료
+            dropped += 1
+        if dropped:
+            print(f"[MicCapture] BT 웜업: 무음 {dropped}프레임"
+                  f"({dropped*chunk_size/self.sample_rate:.2f}s) 버림")
+        return dropped
+
     @property
     def _device_label(self) -> str:
         """로그용 마이크 장치 이름."""
         try:
+            idx = self._resolve_device()
             info = (
                 sd.query_devices(kind="input")
-                if self.device_index is None
-                else sd.query_devices(self.device_index)
+                if idx is None
+                else sd.query_devices(idx)
             )
-            return f"[{self.device_index}]{info['name']}"
+            return f"[{idx}]{info['name']}"
         except Exception:
             return f"[{self.device_index}]unknown"
 

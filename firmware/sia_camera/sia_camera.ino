@@ -234,6 +234,11 @@ static bool init_camera() {
         Serial.printf("[CAM] 초기화 실패 0x%x\n", err);
         return false;
     }
+
+    // 좌우 반전 보정 (YOLO 방향이랑 실제 위치 일치시키기)
+    sensor_t *s = esp_camera_sensor_get();
+    s->set_hmirror(s, 1);
+
     return true;
 }
 

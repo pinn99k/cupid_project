@@ -14,6 +14,8 @@ LABEL_KR = {
     "chair": "의자", "couch": "소파", "bench": "벤치",
     "dining table": "테이블", "potted plant": "화분", "tv": "티비",
     "keyboard": "키보드", "mouse": "마우스", "clock": "시계",
+    "traffic light": "신호등",
+    "fire hydrant": "너굴이",  # 시연용 '너굴이' 인형 — YOLO는 fire hydrant로 인식, 말은 너굴이로.
 }
 
 # 방향

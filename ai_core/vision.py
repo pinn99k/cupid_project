@@ -6,7 +6,12 @@ YOLO 객체 인식 + bbox 후처리
 """
 
 from ultralytics import YOLO
-from server.config import YOLO_MODEL, YOLO_CONF_THRESHOLD, YOLO_IMGSZ
+from server.config import (
+    YOLO_MODEL, YOLO_CONF_THRESHOLD, YOLO_IMGSZ,
+    DIST_NEAR_AREA, DIST_FAR_AREA,
+    DIST_USE_HEIGHT, DIST_NEAR_HEIGHT, DIST_FAR_HEIGHT,
+    DIST_USE_BOTTOM_Y, DIST_NEAR_BOTTOM_Y, DIST_DEBUG,
+)
 from utils.latency_logger import log
 
 
@@ -15,9 +20,10 @@ from utils.latency_logger import log
 LEFT_BOUND = 0.33
 RIGHT_BOUND = 0.66
 
-# 거리 판정 기준 (화면 대비 물체 넓이 비율)
-NEAR_AREA = 0.20
-FAR_AREA = 0.05
+# 거리 판정 기준(화면 대비 물체 넓이 비율). config에서 주입 — 실측값은 .env로 보정.
+# (이름은 호환 위해 유지. 기본값은 기존 0.20/0.05과 동일.)
+NEAR_AREA = DIST_NEAR_AREA
+FAR_AREA = DIST_FAR_AREA
 
 model = None
 
@@ -66,13 +72,37 @@ def _get_direction(center_x_ratio):
     return "center"
 
 
-def _get_distance(area_ratio):
-    """물체 넓이 비율 → 가까이/중간/멀리"""
+def _get_distance(area_ratio, height_ratio=None, bottom_y=None):
+    """물체의 거리 추정 → near/mid/far.
+
+    기본은 면적비(현행). DIST_USE_HEIGHT / DIST_USE_BOTTOM_Y 가 켜지면 보강 신호로
+    판정을 조정한다. 둘 다 off(기본)면 면적-only → 기존 동작과 100% 동일.
+
+    Args:
+        area_ratio:   bbox 넓이 / 화면 넓이.
+        height_ratio: bbox 높이 / 화면 높이 (세로 물체 안정용, 옵션).
+        bottom_y:     bbox 아랫변 y(정규화 0~1). 1에 가까울수록 화면 하단=가까움(옵션).
+    """
+    # 1) 면적비 (현행 기준)
     if area_ratio > NEAR_AREA:
-        return "near"
-    if area_ratio < FAR_AREA:
-        return "far"
-    return "mid"
+        dist = "near"
+    elif area_ratio < FAR_AREA:
+        dist = "far"
+    else:
+        dist = "mid"
+
+    # 2) (옵션) 높이비 보강 — 세로 물체는 면적보다 높이가 거리에 덜 흔들린다.
+    if DIST_USE_HEIGHT and height_ratio is not None:
+        if height_ratio > DIST_NEAR_HEIGHT:
+            dist = "near"
+        elif height_ratio < DIST_FAR_HEIGHT and dist != "near":
+            dist = "far"
+
+    # 3) (옵션) 바닥 접점 y 보강 — 아랫변이 화면 하단이면 가까운 바닥 장애물.
+    if DIST_USE_BOTTOM_Y and bottom_y is not None and bottom_y > DIST_NEAR_BOTTOM_Y:
+        dist = "near"
+
+    return dist
 
 
 def enrich(detections, frame_w, frame_h, ultrasonic_cm=None, min_relevant_area=0.0):
@@ -88,13 +118,22 @@ def enrich(detections, frame_w, frame_h, ultrasonic_cm=None, min_relevant_area=0
     for det in detections:
         center_x_ratio = (det["x"] + det["w"] / 2) / frame_w
         area_ratio = (det["w"] * det["h"]) / (frame_w * frame_h)
+        height_ratio = det["h"] / frame_h
+        bottom_y = (det["y"] + det["h"]) / frame_h  # bbox 아랫변(접점) — 클수록 가까움
 
         # 관련성 게이트: 너무 작은(먼) 객체는 분석 대상에서 제외
         if min_relevant_area > 0 and area_ratio < min_relevant_area:
             continue
 
         direction = _get_direction(center_x_ratio)
-        distance = _get_distance(area_ratio)
+        distance = _get_distance(area_ratio, height_ratio, bottom_y)
+
+        # 보정용 로그(DIST_DEBUG=on): 위험/안전 거리에서 이 값들을 읽어 .env 임계 튜닝.
+        if DIST_DEBUG:
+            print(
+                f"[DIST] {det['label']:14s} area={area_ratio:.3f} h={height_ratio:.3f}"
+                f" bottom_y={bottom_y:.3f} dir={direction} → {distance}"
+            )
 
         if direction == "center":
             center_objects.append((det["label"], area_ratio))

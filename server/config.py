@@ -74,6 +74,28 @@ DETECT_INTERVAL_SEC: float = float(os.getenv("DETECT_INTERVAL_SEC", "0"))
 # 배경 스크린(동물의숲 등)의 작고 먼 오탐 차단. 0이면 비활성.
 RELEVANCE_MIN_AREA: float = float(os.getenv("RELEVANCE_MIN_AREA", "0.01"))
 DETECTION_BROADCAST_INTERVAL: float = float(os.getenv("DETECTION_BROADCAST_INTERVAL", "0.1"))
+
+# ── 단안(카메라) 거리추정 보정 — 초음파 미사용 ──────────────────────────────
+# ⚠️ 모든 기본값 = 기존 하드코딩값과 동일 → 끄면(=실측 전) 시연 동작 100% 불변.
+#    ESP32-CAM 앞에 물체를 위험/안전 거리에 놓고 DIST_DEBUG=on 로 bbox_ratio/높이/
+#    바닥y를 읽어, 아래 임계값을 클래스 화각에 맞게 채우면 된다.
+# 1) 면적비(현행 기준): 화면 대비 bbox 넓이.
+DIST_NEAR_AREA: float = float(os.getenv("DIST_NEAR_AREA", "0.20"))  # 이상 → near
+DIST_FAR_AREA: float = float(os.getenv("DIST_FAR_AREA", "0.05"))    # 미만 → far
+# 2) (옵션) 높이비 보강: 세로 물체는 면적보다 높이가 거리에 덜 흔들린다.
+#    DIST_USE_HEIGHT=on 일 때만 적용(기본 off → 면적만, 현행과 동일).
+DIST_USE_HEIGHT: bool = os.getenv("DIST_USE_HEIGHT", "").lower() in ("1", "true", "yes", "on")
+DIST_NEAR_HEIGHT: float = float(os.getenv("DIST_NEAR_HEIGHT", "0.55"))  # 높이비 이상 → near 승격
+DIST_FAR_HEIGHT: float = float(os.getenv("DIST_FAR_HEIGHT", "0.20"))    # 미만 → far(이미 near면 유지)
+# 3) (옵션) 바닥 접점 y 보강: 아랫변이 화면 하단(=가까움)일수록 near 가중. 카메라 고정 가정.
+#    DIST_USE_BOTTOM_Y=on 일 때만 적용(기본 off).
+DIST_USE_BOTTOM_Y: bool = os.getenv("DIST_USE_BOTTOM_Y", "").lower() in ("1", "true", "yes", "on")
+DIST_NEAR_BOTTOM_Y: float = float(os.getenv("DIST_NEAR_BOTTOM_Y", "0.85"))  # 바닥y 이상 → near
+# 4) demo가 '가까운 사람'으로 보는 면적 임계(현행 0.25 유지).
+#    #3 불일치 해소: DIST_DEMO_CLOSE_AREA=DIST_NEAR_AREA 로 맞추면 vision과 완전 통일.
+DIST_DEMO_CLOSE_AREA: float = float(os.getenv("DIST_DEMO_CLOSE_AREA", "0.25"))
+# 보정용 디버그 로그: on 이면 enrich()가 객체별 면적/높이/바닥y/판정을 출력.
+DIST_DEBUG: bool = os.getenv("DIST_DEBUG", "").lower() in ("1", "true", "yes", "on")
 AI_LOOP_SLEEP_SEC: float = float(os.getenv("AI_LOOP_SLEEP_SEC", "0.03"))
 DANGER_DISTANCE_CM: float = float(os.getenv("DANGER_DISTANCE_CM", "30"))
 SERVER_HOST: str = os.getenv("SERVER_HOST", "0.0.0.0")

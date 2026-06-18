@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Iterable
 
+from server.config import DIST_DEMO_CLOSE_AREA
+
 DEMO_VOICE_DIR = Path("server/demo_voices")
 
 SCENARIO_KEYWORDS: dict[str, str] = {
@@ -136,9 +138,11 @@ def _bbox_area(obj: dict) -> float:
 
 
 def _select_person(objects: list[dict], *, close: bool) -> dict | None:
+    # 가까운 사람 판정 면적 임계 = config(기본 0.25, 현행 유지).
+    # vision의 NEAR_AREA와 통일하려면 .env에서 DIST_DEMO_CLOSE_AREA=DIST_NEAR_AREA 로.
     candidates = [
         obj for obj in objects
-        if _is_person(obj) and ((_bbox_area(obj) > 0.25) is close)
+        if _is_person(obj) and ((_bbox_area(obj) > DIST_DEMO_CLOSE_AREA) is close)
     ]
     if not candidates:
         return None

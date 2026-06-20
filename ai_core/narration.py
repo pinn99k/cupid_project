@@ -4,6 +4,7 @@
 """
 
 from ai_core.llm_client import call_async
+from ai_core.scene_text import label_speech
 
 # YOLO 라벨
 LABEL_KR = {
@@ -57,13 +58,13 @@ async def narrate_async(enriched_data) -> str | None:
     for obj in enriched_data.get("objects", []):
         direction = DIRECTION_KR[obj["direction"]]
         distance = DISTANCE_KR[obj["distance_est"]]
-        name = LABEL_KR.get(obj["label"], obj["label"])
+        name = label_speech(obj["label"])
         objects_desc.append(f"{direction} {distance} {name}")
 
     distance_cm = enriched_data.get("ultrasonic_cm")
     target = enriched_data.get("ultrasonic_target")
     if distance_cm and target:
-        target_kr = LABEL_KR.get(target, target)
+        target_kr = label_speech(target)
         sensor_desc = f", 정면 {distance_cm}cm 거리에 {target_kr}"
     else:
         sensor_desc = ""

@@ -6,7 +6,7 @@ LLM이 장면을 추상적으로 해석하지 않도록, VQA 프롬프트에 넣
 
 from __future__ import annotations
 
-from ai_core.scene_text import label_kr
+from ai_core.scene_text import label_speech
 
 
 _DIR_ORDER = ("left", "center", "right")
@@ -87,7 +87,7 @@ def _unique_names(objects: list[dict]) -> list[str]:
     names = []
     seen = set()
     for obj in objects:
-        name = label_kr(str(obj.get("label", "장애물")))
+        name = label_speech(str(obj.get("label", "장애물")))
         if name not in seen:
             seen.add(name)
             names.append(name)

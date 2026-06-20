@@ -170,37 +170,51 @@ class MicCapture:
             t.join(timeout=2)
 
     def _manual_stream_loop(self) -> None:
-        """캡처 스레드 본체. 항상 프레임을 읽어 pre-roll 유지 + 녹음 중엔 누적."""
+        """캡처 스레드 본체. 항상 프레임을 읽어 pre-roll 유지 + 녹음 중엔 누적.
+
+        ★ 골전도 잠금(device_name): COSY만 연다. 미연결이면 '대기'하고 노트북으로
+          절대 폴백하지 않는다. 스트림이 끊기면 다음 루프에서 재탐색 →
+          COSY 재연결 시 자동 복구. (stop_manual_capture_stream 호출 전까지 유지)
+        """
         chunk_size = 1024
-        try:
-            with sd.InputStream(
-                device=self._resolve_device(),
-                samplerate=self.sample_rate,
-                channels=1,
-                dtype="int16",
-                blocksize=chunk_size,
-            ) as stream:
-                self._warmup_stream(stream, chunk_size)  # BT 콜드스타트 무음 버림
-                while self._manual_stream_running:
-                    try:
-                        chunk, _ = stream.read(chunk_size)
-                    except Exception:
-                        break
-                    chunk = chunk.flatten()
-                    with self._manual_lock:
-                        if self._manual_active:
-                            self._manual_frames.append(chunk)
-                            # 안전 하드캡: 운영자/타이머가 못 멈춰도 버퍼 폭주 방지
-                            if time.monotonic() - self._manual_start_t > self._manual_max_sec:
-                                self._manual_hardcap_hit = True
-                                self._manual_active = False
-                        else:
-                            self._manual_preroll.append(chunk)
-        except Exception as e:
-            self.last_error = self._format_recording_error(e)
-            print(f"[MicCapture] 수동 캡처 스트림 오류: {self.last_error}")
-        finally:
-            self._manual_stream_running = False
+        while self._manual_stream_running:
+            idx = self._resolve_device()
+            # 잠금인데 COSY 미연결 → 노트북 사용 금지, 잠깐 대기 후 재탐색
+            if self.device_name and idx is None:
+                time.sleep(1.0)
+                continue
+            try:
+                with sd.InputStream(
+                    device=idx,
+                    samplerate=self.sample_rate,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=chunk_size,
+                ) as stream:
+                    self._warmup_stream(stream, chunk_size)  # BT 콜드스타트 무음 버림
+                    while self._manual_stream_running:
+                        try:
+                            chunk, _ = stream.read(chunk_size)
+                        except Exception:
+                            print("[MicCapture] 스트림 read 실패 → 장치 재탐색")
+                            self._last_resolved_index = None
+                            break
+                        chunk = chunk.flatten()
+                        with self._manual_lock:
+                            if self._manual_active:
+                                self._manual_frames.append(chunk)
+                                # 안전 하드캡: 운영자/타이머가 못 멈춰도 버퍼 폭주 방지
+                                if time.monotonic() - self._manual_start_t > self._manual_max_sec:
+                                    self._manual_hardcap_hit = True
+                                    self._manual_active = False
+                            else:
+                                self._manual_preroll.append(chunk)
+            except Exception as e:
+                self.last_error = self._format_recording_error(e)
+                print(f"[MicCapture] 수동 캡처 스트림 오류(재시도): {self.last_error}")
+                self._last_resolved_index = None
+                time.sleep(0.5)
+        print("[MicCapture] 수동 캡처 스레드 종료")
 
     def start_manual_recording(self) -> bool:
         """녹음 즉시 시작(VAD 끔). pre-roll 200ms 포함. 이미 녹음 중이면 False."""
@@ -300,9 +314,15 @@ class MicCapture:
         self.last_rms = 0.0
         self.last_error = None
 
+        # 골전도 잠금 시 COSY 없으면 노트북으로 폴백하지 않고 즉시 실패(조용히 재청취).
+        _dev = self._resolve_device()
+        if self.device_name and _dev is None:
+            self.last_error = f"골전도 마이크 '{self.device_name}' 미연결 (노트북 폴백 안 함)"
+            print(f"[MicCapture] ⚠️ {self.last_error}")
+            return None
         try:
             with sd.InputStream(
-                device=self._resolve_device(),
+                device=_dev,
                 samplerate=self.sample_rate,
                 channels=1,
                 dtype="int16",
@@ -552,35 +572,40 @@ class MicCapture:
     # 유틸리티
     # ------------------------------------------------------------------
 
+    def _locked_index(self):
+        """device_name(이름 부분일치)로 찾은 입력 장치 인덱스. 못 찾으면 None.
+        ★ 시스템 기본(노트북)으로 폴백하지 않는다 — 골전도 완전 고정."""
+        target = self.device_name.lower()
+        try:
+            for i, d in enumerate(sd.query_devices()):
+                if d["max_input_channels"] > 0 and target in d["name"].lower():
+                    return i
+        except Exception as e:
+            print(f"[MicCapture] 장치 조회 실패: {e}")
+        return None
+
+    def _name_of(self, idx) -> str:
+        try:
+            if idx is None:
+                return "[기본 입력]"
+            return f"[{idx}] {sd.query_devices(idx)['name']}"
+        except Exception:
+            return f"[{idx}]"
+
     def _resolve_device(self):
-        """사용할 입력 장치 인덱스를 결정.
-        우선순위: device_name(이름 부분일치) → device_index → None(시스템 기본).
-        매 stream 오픈마다 호출 → BT 재연결로 인덱스가 바뀌어도 이름으로 재탐색.
-        인덱스가 바뀐 경우에만 로그를 남긴다.
+        """입력 장치 인덱스 결정. 매 stream 오픈마다 호출(이름으로 재탐색).
+        - device_name(잠금) 설정: 이름으로 찾으면 인덱스, 못 찾으면 None=미연결.
+          ★ 노트북(시스템 기본)으로 절대 폴백하지 않는다. (호출부가 대기/실패 처리)
+        - device_name 미설정: device_index(None=시스템 기본) — 기존 동작.
+        상태가 바뀐 경우에만 로그.
         """
-        idx = self.device_index
-        if self.device_name:
-            try:
-                target = self.device_name.lower()
-                found = next(
-                    (i for i, d in enumerate(sd.query_devices())
-                     if d["max_input_channels"] > 0 and target in d["name"].lower()),
-                    None,
-                )
-                if found is not None:
-                    idx = found
-                else:
-                    print(f"[MicCapture] ⚠️ 마이크 '{self.device_name}' 못 찾음 "
-                          f"→ index={self.device_index}/기본으로 폴백")
-            except Exception as e:
-                print(f"[MicCapture] 장치 이름 조회 실패({e}) → index 폴백")
+        idx = self._locked_index() if self.device_name else self.device_index
         if idx != self._last_resolved_index:
-            try:
-                name = sd.query_devices(idx)["name"] if idx is not None \
-                    else sd.query_devices(kind="input")["name"]
-            except Exception:
-                name = "unknown"
-            print(f"[MicCapture] 입력 장치 → [{idx}] {name}")
+            if self.device_name and idx is None:
+                print(f"[MicCapture] ⚠️ '{self.device_name}' 미연결 — 노트북 마이크로 "
+                      f"폴백 안 함(대기). 골전도 이어폰 연결을 확인하세요.")
+            else:
+                print(f"[MicCapture] 입력 장치 → {self._name_of(idx)}")
             self._last_resolved_index = idx
         return idx
 

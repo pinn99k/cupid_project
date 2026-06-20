@@ -142,9 +142,8 @@ def _call_sync(system_prompt: str, user_msg: str, max_tokens: int = LLM_MAX_TOKE
             "\n\n[LANGUAGE OVERRIDE] The child is speaking ENGLISH. "
             "Reply ONLY in warm, simple English a 5-7 year old understands. "
             "Keep the same kind, cheerful big-sister persona and the walking-guide rules. "
-            "1-2 short sentences. Do NOT use any Korean, EXCEPT keep the proper name "
-            "\"너굴이\" exactly as is — it is a character's name, never translate it "
-            "(so '너굴이' stays '너굴이' even in English)."
+            "1-2 short sentences. Do NOT use any Korean. "
+            "Use object names exactly as written in [현재 장면] (e.g. 'raccoon', 'traffic light')."
         )
 
     # Gemini 2.5-flash: thinking 토큰 비활성화

@@ -14,8 +14,8 @@ __pycache__/
 *.pt
 
 # 생성된 오디오 (API로 생성하므로 git 제외)
-audio/fallback/*.mp3
-audio/fallback/*.wav
+code/audio/fallback/*.mp3
+code/audio/fallback/*.wav
 
 # TTS 캐시
 tts_cache/
@@ -44,5 +44,5 @@ Thumbs.db
 logs/
 
 # 개인 IDE 설정 / 테스트 산출물 (공개 제외)
-.claude/launch.json
-test_results.txt
+**/.claude/launch.json
+**/test_results.txt
